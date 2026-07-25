@@ -1,0 +1,1536 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0e1116">
+<meta name="description" content="Sehr genaue Sprach-zu-Text App für Deutsch, Englisch und gemischte Sprache — mit Archiv, Export und optionaler KI-Nachbearbeitung.">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Voice Notes – Transkription DE/EN</title>
+<style>
+/* ============================ Design-Tokens ============================ */
+:root{
+  --bg:#0e1116; --bg2:#161b22; --bg3:#1d232c; --line:#2a323d;
+  --fg:#e9eef5; --fg2:#9aa7b8; --fg3:#6b7889;
+  --acc:#7c5cff; --acc2:#00d2b8; --warn:#ffb020; --bad:#ff5d5d; --good:#3fd07a;
+  --radius:16px; --shadow:0 10px 30px rgba(0,0,0,.35);
+  --safeT:env(safe-area-inset-top,0px); --safeB:env(safe-area-inset-bottom,0px);
+}
+:root[data-theme="light"]{
+  --bg:#f5f7fb; --bg2:#ffffff; --bg3:#eef1f7; --line:#dfe4ec;
+  --fg:#131720; --fg2:#5b6676; --fg3:#8c96a5;
+  --shadow:0 10px 30px rgba(20,30,60,.10);
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  font-size:16px; line-height:1.5; overscroll-behavior-y:none;
+  padding-bottom:var(--safeB);
+}
+button,input,select,textarea{font:inherit;color:inherit}
+button{background:none;border:none;cursor:pointer}
+.hidden{display:none !important}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px}
+
+/* ============================ Kopfzeile ============================ */
+header{
+  position:sticky; top:0; z-index:30; background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--line); padding:calc(10px + var(--safeT)) 14px 10px;
+}
+.hrow{display:flex;align-items:center;gap:10px;max-width:900px;margin:0 auto}
+.brand{display:flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.2px;font-size:17px;flex:1;min-width:0}
+.brand #sessTitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand .dot{width:26px;height:26px;border-radius:9px;flex:none;
+  background:linear-gradient(135deg,var(--acc),var(--acc2));display:grid;place-items:center;font-size:14px}
+.iconbtn{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;font-size:17px;
+  background:var(--bg2);border:1px solid var(--line);flex:none;transition:.15s}
+.iconbtn:active{transform:scale(.93)}
+.iconbtn.on{background:var(--acc);border-color:var(--acc);color:#fff}
+
+/* ============================ Layout ============================ */
+main{max-width:900px;margin:0 auto;padding:14px 14px 130px}
+.card{background:var(--bg2);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:12px}
+.card h3{font-size:13px;text-transform:uppercase;letter-spacing:.7px;color:var(--fg2);margin-bottom:10px;font-weight:700}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.spacer{flex:1}
+.muted{color:var(--fg2);font-size:13px}
+.tiny{font-size:12px;color:var(--fg3)}
+
+/* ============================ Sprachwahl ============================ */
+.langs{display:flex;gap:8px}
+.lang{flex:1;padding:11px 6px;border-radius:13px;background:var(--bg3);border:1.5px solid transparent;
+  text-align:center;font-weight:700;font-size:14px;transition:.15s;line-height:1.2}
+.lang small{display:block;font-weight:500;font-size:11px;color:var(--fg2);margin-top:2px}
+.lang.active{background:linear-gradient(135deg,color-mix(in srgb,var(--acc) 30%,transparent),color-mix(in srgb,var(--acc2) 22%,transparent));
+  border-color:var(--acc);}
+.lang.active small{color:var(--fg)}
+
+/* ============================ Rekorder ============================ */
+.recwrap{position:relative;border-radius:var(--radius);overflow:hidden;background:var(--bg2);
+  border:1px solid var(--line);margin-bottom:12px}
+#wave{display:block;width:100%;height:110px}
+.recinfo{display:flex;align-items:center;gap:14px;padding:10px 14px 12px;border-top:1px solid var(--line)}
+#timer{font-variant-numeric:tabular-nums;font-weight:800;font-size:26px;letter-spacing:1px}
+.stat{font-size:12px;color:var(--fg2);line-height:1.25}
+.stat b{display:block;color:var(--fg);font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
+.reclamp{width:9px;height:9px;border-radius:50%;background:var(--fg3)}
+.reclamp.live{background:var(--bad);box-shadow:0 0 0 0 rgba(255,93,93,.7);animation:pulse 1.4s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,93,93,.6)}70%{box-shadow:0 0 0 12px rgba(255,93,93,0)}100%{box-shadow:0 0 0 0 rgba(255,93,93,0)}}
+
+/* ============================ Transkript ============================ */
+#transcript{min-height:160px}
+.seg{padding:7px 10px;border-radius:11px;margin-bottom:6px;position:relative;
+  border:1px solid transparent;transition:background .15s}
+.seg:hover{background:var(--bg3)}
+.seg.active{background:color-mix(in srgb,var(--acc) 18%,transparent);border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
+.seg.marked{box-shadow:inset 3px 0 0 var(--warn)}
+.seg .meta{font-size:11px;color:var(--fg3);display:flex;gap:7px;align-items:center;margin-bottom:2px;user-select:none}
+.badge{font-size:10px;padding:1px 6px;border-radius:6px;background:var(--bg3);border:1px solid var(--line);color:var(--fg2)}
+.badge.de{color:#ffcf6b} .badge.en{color:#7fd6ff} .badge.pro{color:var(--acc2);border-color:var(--acc2)}
+.seg .txt{outline:none;white-space:pre-wrap;word-break:break-word}
+.seg .txt:focus{background:var(--bg3);border-radius:6px}
+.seg.spkB .txt{color:#8fe0ff}
+#interim{color:var(--fg3);font-style:italic;padding:4px 10px;min-height:1.5em;white-space:pre-wrap}
+.empty{color:var(--fg3);text-align:center;padding:26px 10px;font-size:14px}
+.empty .big{font-size:34px;display:block;margin-bottom:8px;opacity:.6}
+mark{background:color-mix(in srgb,var(--warn) 55%,transparent);color:inherit;border-radius:3px;padding:0 2px}
+
+/* ============================ Knöpfe ============================ */
+.btn{padding:10px 14px;border-radius:12px;background:var(--bg3);border:1px solid var(--line);
+  font-weight:600;font-size:14px;display:inline-flex;align-items:center;gap:7px;transition:.15s}
+.btn:active{transform:scale(.96)}
+.btn.pri{background:linear-gradient(135deg,var(--acc),#6146e0);border-color:transparent;color:#fff}
+.btn.ok{background:linear-gradient(135deg,var(--acc2),#00a793);border-color:transparent;color:#04231f}
+.btn.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,var(--line))}
+.btn:disabled{opacity:.4;pointer-events:none}
+.btn.sm{padding:7px 10px;font-size:13px;border-radius:10px}
+.toggle{display:flex;align-items:center;gap:9px;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.toggle:last-child{border-bottom:none}
+.toggle .lbl{flex:1}
+.toggle .lbl small{display:block;color:var(--fg2);font-size:12px;font-weight:400}
+.sw{width:44px;height:26px;border-radius:14px;background:var(--bg3);border:1px solid var(--line);
+  position:relative;flex:none;transition:.18s}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;
+  background:var(--fg2);transition:.18s}
+.toggle.on .sw{background:var(--acc);border-color:var(--acc)}
+.toggle.on .sw::after{left:20px;background:#fff}
+
+/* ============================ Aufnahmeleiste ============================ */
+.dock{position:fixed;left:0;right:0;bottom:0;z-index:35;padding:10px 14px calc(10px + var(--safeB));
+  background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(14px);
+  -webkit-backdrop-filter:blur(14px);border-top:1px solid var(--line)}
+.dockin{max-width:900px;margin:0 auto;display:flex;align-items:center;gap:10px;justify-content:center}
+.mic{width:66px;height:66px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:26px;
+  background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;box-shadow:var(--shadow);transition:.15s}
+.mic:active{transform:scale(.93)}
+.mic.rec{background:linear-gradient(135deg,#ff5d5d,#d63a3a)}
+.dockbtn{width:48px;height:48px;border-radius:15px;flex:none;display:grid;place-items:center;font-size:19px;
+  background:var(--bg2);border:1px solid var(--line);transition:.15s}
+.dockbtn:active{transform:scale(.93)}
+.dockbtn:disabled{opacity:.35;pointer-events:none}
+
+/* ============================ Wiedergabe ============================ */
+.play{display:flex;align-items:center;gap:10px}
+input[type=range]{-webkit-appearance:none;appearance:none;height:5px;border-radius:4px;background:var(--bg3);flex:1}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--acc);border:2px solid var(--bg2)}
+input[type=range]::-moz-range-thumb{width:16px;height:16px;border:none;border-radius:50%;background:var(--acc)}
+
+/* ============================ Dialoge ============================ */
+.sheet{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;justify-content:center}
+.sheet .inner{background:var(--bg);width:100%;max-width:640px;max-height:92vh;overflow-y:auto;
+  border-radius:22px 22px 0 0;border:1px solid var(--line);padding:16px 16px calc(24px + var(--safeB));
+  animation:up .22s ease}
+@keyframes up{from{transform:translateY(30px);opacity:.4}to{transform:translateY(0);opacity:1}}
+.sheet h2{font-size:19px;margin-bottom:4px}
+.shead{display:flex;align-items:center;gap:10px;margin-bottom:12px;position:sticky;top:-16px;
+  background:var(--bg);padding:6px 0 8px;z-index:2}
+.shead h2{flex:1}
+input[type=text],input[type=password],input[type=search],textarea,select{
+  width:100%;padding:11px 12px;border-radius:12px;background:var(--bg2);border:1px solid var(--line);
+  outline:none;font-size:15px}
+input:focus,textarea:focus,select:focus{border-color:var(--acc)}
+textarea{resize:vertical;min-height:92px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+label.fl{display:block;font-size:13px;color:var(--fg2);margin:12px 0 5px;font-weight:600}
+.notice{background:var(--bg3);border-left:3px solid var(--acc);padding:10px 12px;border-radius:8px;
+  font-size:13px;color:var(--fg2);margin-top:10px}
+.notice b{color:var(--fg)}
+
+/* ============================ Archiv ============================ */
+.item{display:flex;gap:10px;align-items:center;padding:11px;border-radius:13px;background:var(--bg2);
+  border:1px solid var(--line);margin-bottom:8px}
+.item .body{flex:1;min-width:0}
+.item .ttl{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .sub{font-size:12px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .snip{font-size:12px;color:var(--fg3);margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden}
+
+/* ============================ Menü / Toast ============================ */
+.menu{position:fixed;z-index:70;background:var(--bg2);border:1px solid var(--line);border-radius:14px;
+  box-shadow:var(--shadow);padding:6px;min-width:210px;max-height:70vh;overflow:auto}
+.menu button{display:flex;width:100%;gap:9px;align-items:center;padding:10px 11px;border-radius:10px;
+  font-size:14px;text-align:left}
+.menu button:hover{background:var(--bg3)}
+.menu hr{border:none;border-top:1px solid var(--line);margin:5px 2px}
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(104px + var(--safeB));z-index:90;
+  background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:12px;font-size:14px;font-weight:600;
+  box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:.2s;max-width:90vw;text-align:center}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(-6px)}
+.bar{height:5px;border-radius:4px;background:var(--bg3);overflow:hidden;margin-top:8px}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2));width:0;transition:width .25s}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:12px;padding:4px 9px;border-radius:9px;background:var(--bg3);border:1px solid var(--line)}
+@media (min-width:720px){ .dock{border-radius:0} #wave{height:130px} }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hrow">
+    <div class="brand"><span class="dot">🎙️</span><span id="sessTitle">Neue Aufnahme</span></div>
+    <button class="iconbtn" id="btnArchive" title="Archiv">📚</button>
+    <button class="iconbtn" id="btnStats" title="Statistik">📊</button>
+    <button class="iconbtn" id="btnTheme" title="Design">🌓</button>
+    <button class="iconbtn" id="btnSettings" title="Einstellungen">⚙️</button>
+  </div>
+</header>
+
+<main>
+  <div id="warnBox" class="notice hidden" style="margin-bottom:12px"></div>
+
+  <div class="card">
+    <h3>Sprache</h3>
+    <div class="langs">
+      <button class="lang active" data-lang="de">🇩🇪 Deutsch<small>de-DE</small></button>
+      <button class="lang" data-lang="en">🇬🇧 Englisch<small>en-US</small></button>
+      <button class="lang" data-lang="mix">🌍 Gemischt<small>DE + EN parallel</small></button>
+    </div>
+    <div class="tiny" id="langHint" style="margin-top:9px">Erkennt Deutsch. Umschalten geht auch während der Aufnahme.</div>
+  </div>
+
+  <div class="recwrap">
+    <canvas id="wave"></canvas>
+    <div class="recinfo">
+      <span class="reclamp" id="lamp"></span>
+      <span id="timer">00:00</span>
+      <div class="spacer"></div>
+      <div class="stat"><b id="stWords">0</b>Wörter</div>
+      <div class="stat"><b id="stWpm">0</b>W/min</div>
+      <div class="stat"><b id="stMarks">0</b>Marken</div>
+    </div>
+  </div>
+
+  <div class="card" id="playCard" style="display:none">
+    <div class="play">
+      <button class="btn sm" id="btnPlay">▶︎</button>
+      <span class="tiny" id="playTime" style="min-width:82px;font-variant-numeric:tabular-nums">0:00 / 0:00</span>
+      <input type="range" id="seek" min="0" max="1000" value="0">
+      <button class="btn sm" id="btnSpeed">1×</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom:10px">
+      <h3 style="margin:0;flex:1">Transkript</h3>
+      <button class="btn sm" id="btnView" title="Live- oder Pro-Fassung">Live</button>
+      <button class="btn sm" id="btnPro">✨ Pro</button>
+      <button class="btn sm" id="btnAI">🤖 KI</button>
+      <button class="btn sm" id="btnExport">⬇︎</button>
+    </div>
+    <div id="proBar" class="hidden"><div class="bar"><i id="proFill"></i></div><div class="tiny" id="proMsg" style="margin-top:5px"></div></div>
+    <div id="transcript"></div>
+    <div id="interim"></div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn sm" id="btnCopy">📋 Kopieren</button>
+      <button class="btn sm" id="btnShare">📤 Teilen</button>
+      <div class="spacer"></div>
+      <button class="btn sm danger" id="btnNew">🗑️ Neu</button>
+    </div>
+  </div>
+
+  <div class="card" id="aiCard" style="display:none">
+    <h3 id="aiTitle">KI-Ergebnis</h3>
+    <div id="aiOut" style="white-space:pre-wrap"></div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn sm" id="btnAiCopy">📋 Kopieren</button>
+      <button class="btn sm" id="btnAiApply">↩︎ Als Transkript übernehmen</button>
+      <button class="btn sm" id="btnAiClose">Schließen</button>
+    </div>
+  </div>
+</main>
+
+<div class="dock">
+  <div class="dockin">
+    <button class="dockbtn" id="btnSpeaker" title="Sprecher wechseln" disabled>👥</button>
+    <button class="dockbtn" id="btnPause" title="Pause" disabled>⏸</button>
+    <button class="mic" id="btnMic" title="Aufnahme starten">🎙️</button>
+    <button class="dockbtn" id="btnMark" title="Marke setzen" disabled>🔖</button>
+    <button class="dockbtn" id="btnSearchTop" title="Archiv durchsuchen">🔎</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+<audio id="player" preload="metadata"></audio>
+
+<!-- ============================ Archiv ============================ -->
+<div class="sheet hidden" id="sheetArchive">
+  <div class="inner">
+    <div class="shead">
+      <h2>📚 Archiv</h2>
+      <button class="iconbtn" data-close>✕</button>
+    </div>
+    <input type="search" id="archSearch" placeholder="Im Volltext suchen …">
+    <div class="row tiny" style="margin:10px 0 6px">
+      <span id="archInfo"></span><div class="spacer"></div>
+      <button class="btn sm" id="btnBackup">💾 Backup</button>
+      <button class="btn sm" id="btnRestore">📥 Import</button>
+    </div>
+    <div id="archList"></div>
+  </div>
+</div>
+
+<!-- ============================ Statistik ============================ -->
+<div class="sheet hidden" id="sheetStats">
+  <div class="inner">
+    <div class="shead"><h2>📊 Statistik</h2><button class="iconbtn" data-close>✕</button></div>
+    <div id="statsBody"></div>
+  </div>
+</div>
+
+<!-- ============================ Einstellungen ============================ -->
+<div class="sheet hidden" id="sheetSettings">
+  <div class="inner">
+    <div class="shead"><h2>⚙️ Einstellungen</h2><button class="iconbtn" data-close>✕</button></div>
+
+    <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.7px;color:var(--fg2);margin-bottom:4px">Texthilfen</h3>
+    <div class="toggle" data-set="cmds"><div class="lbl">Diktier-Befehle<small>„Punkt", „neuer Absatz", „streich das", „period", „new paragraph" …</small></div><div class="sw"></div></div>
+    <div class="toggle" data-set="fillers"><div class="lbl">Füllwörter entfernen<small>äh, ähm, halt, sozusagen, um, uh, like … (Original bleibt gespeichert)</small></div><div class="sw"></div></div>
+    <div class="toggle" data-set="autoPunct"><div class="lbl">Automatische Zeichensetzung<small>Satzanfänge groß, Punkt am Satzende, Absätze aus Sprechpausen</small></div><div class="sw"></div></div>
+    <div class="toggle" data-set="vocabFuzzy"><div class="lbl">Wortschatz unscharf anwenden<small>Korrigiert auch knapp danebenliegende Schreibweisen</small></div><div class="sw"></div></div>
+    <div class="toggle" data-set="wakeLock"><div class="lbl">Bildschirm anlassen<small>Verhindert das Sperren während der Aufnahme</small></div><div class="sw"></div></div>
+    <div class="toggle" data-set="autoStop"><div class="lbl">Auto-Stopp bei Stille<small>Beendet die Aufnahme nach 20 s ohne Sprache</small></div><div class="sw"></div></div>
+    <div class="toggle" data-set="autoPro"><div class="lbl">Pro-Transkript automatisch<small>Startet nach dem Stoppen sofort die hochgenaue Nachbearbeitung (nur mit Key)</small></div><div class="sw"></div></div>
+
+    <label class="fl">Eigener Wortschatz — eine Zeile je Eintrag, optional <code>falsch =&gt; richtig</code></label>
+    <textarea id="setVocab" placeholder="Kubernetes&#10;Shy3Rix&#10;deployment&#10;kubernätes =&gt; Kubernetes"></textarea>
+    <div class="tiny">Wird auf das Live-Transkript angewendet und dem Pro-Modell als Hinweis mitgegeben.</div>
+
+    <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.7px;color:var(--fg2);margin:18px 0 4px">Pro-Modus (eigener API-Key)</h3>
+    <div class="tiny">Optional. Ohne Key funktioniert alles außer der hochgenauen Nachtranskription und den KI-Funktionen.</div>
+    <label class="fl">API-Key</label>
+    <div class="row"><input type="password" id="setKey" placeholder="sk-…" style="flex:1"><button class="btn sm" id="btnKeyShow">👁</button></div>
+    <label class="fl">Basis-URL (OpenAI-kompatibel)</label>
+    <input type="text" id="setBase" placeholder="https://api.openai.com/v1">
+    <label class="fl">Transkriptions-Modell</label>
+    <select id="setModel">
+      <option value="gpt-4o-transcribe">gpt-4o-transcribe — beste Qualität</option>
+      <option value="gpt-4o-mini-transcribe">gpt-4o-mini-transcribe — schneller, günstiger</option>
+      <option value="whisper-1">whisper-1 — mit exakten Zeitstempeln</option>
+    </select>
+    <label class="fl">Text-Modell (Aufräumen, Zusammenfassung, Übersetzung)</label>
+    <input type="text" id="setChatModel" placeholder="gpt-4o-mini">
+    <div class="notice"><b>Datenschutz.</b> Der Key wird ausschließlich in diesem Browser gespeichert (localStorage) und nur direkt an die eingetragene Basis-URL geschickt. Aufnahmen und Transkripte liegen lokal in diesem Browser. Die <b>Live-Erkennung</b> läuft über die Spracherkennung des Browsers — Chrome überträgt dafür Audio an Google. Der <b>Pro-Modus</b> überträgt die Aufnahme an den eingetragenen Anbieter.</div>
+
+    <div class="row" style="margin-top:16px">
+      <button class="btn danger" id="btnWipe">Alle Daten löschen</button>
+      <div class="spacer"></div>
+      <button class="btn pri" id="btnSaveSettings">Speichern</button>
+    </div>
+    <div class="tiny" style="margin-top:14px" id="verInfo"></div>
+  </div>
+</div>
+
+<input type="file" id="importFile" accept="application/json" class="hidden">
+
+<script>
+/* ========================================================================
+   Voice Notes — Transkription DE / EN / gemischt
+   Eine Datei, keine Abhängigkeiten.
+   Aufbau:  0 Hilfsfunktionen · 1 Einstellungen · 2 Datenbank · 3 Textwerkzeuge
+            4 Audio · 5 Live-Erkennung · 6 Segmente/Anzeige · 7 Wiedergabe
+            8 Export · 9 Pro-Modus & KI · 10 Archiv · 11 Statistik · 12 Start
+   ==================================================================== */
+
+/* ============================ 0 · Hilfsfunktionen ============================ */
+const $  = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+
+function toast(msg,ms=2200){
+  const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),ms);
+}
+function fmtTime(sec){
+  sec=Math.max(0,Math.floor(sec||0));
+  const h=Math.floor(sec/3600), m=Math.floor(sec%3600/60), s=sec%60;
+  return (h? h+':'+String(m).padStart(2,'0') : String(m).padStart(2,'0'))+':'+String(s).padStart(2,'0');
+}
+function fmtDate(ts){
+  const d=new Date(ts), n=new Date();
+  const sameDay=d.toDateString()===n.toDateString();
+  const t=d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+  return sameDay? 'Heute '+t : d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'})+' '+t;
+}
+function fmtBytes(b){
+  if(!b) return '0 KB';
+  const u=['B','KB','MB','GB']; let i=0; while(b>=1024&&i<u.length-1){b/=1024;i++;}
+  return b.toFixed(b<10&&i>0?1:0)+' '+u[i];
+}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function download(name,content,type='text/plain;charset=utf-8'){
+  const blob = content instanceof Blob ? content : new Blob([content],{type});
+  const url=URL.createObjectURL(blob), a=document.createElement('a');
+  a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+function popMenu(anchor,items){
+  closeMenu();
+  const m=document.createElement('div'); m.className='menu';
+  items.forEach(it=>{
+    if(it==='-'){ m.appendChild(document.createElement('hr')); return; }
+    const b=document.createElement('button');
+    b.innerHTML='<span style="width:20px;display:inline-block">'+(it.icon||'')+'</span><span>'+esc(it.label)+'</span>';
+    if(it.disabled){ b.style.opacity=.4; b.style.pointerEvents='none'; }
+    b.onclick=()=>{ closeMenu(); it.act&&it.act(); };
+    m.appendChild(b);
+  });
+  document.body.appendChild(m);
+  const r=anchor.getBoundingClientRect(), mw=m.offsetWidth, mh=m.offsetHeight;
+  m.style.left = clamp(r.right-mw, 8, innerWidth-mw-8)+'px';
+  m.style.top  = (r.bottom+mh+8>innerHeight ? r.top-mh-6 : r.bottom+6)+'px';
+  /* Außerhalb tippen schließt — Tippen im Menü darf den Klick nicht abschneiden */
+  popMenu._out=e=>{ if(!m.contains(e.target)) closeMenu(); };
+  setTimeout(()=>document.addEventListener('pointerdown',popMenu._out,true),0);
+  popMenu._el=m;
+}
+function closeMenu(){
+  popMenu._out&&document.removeEventListener('pointerdown',popMenu._out,true);
+  popMenu._out=null;
+  popMenu._el&&popMenu._el.remove(); popMenu._el=null;
+}
+function openSheet(id){ $(id).classList.remove('hidden'); }
+function closeSheet(el){ el.classList.add('hidden'); }
+$$('.sheet').forEach(sh=>{
+  sh.addEventListener('click',e=>{ if(e.target===sh||e.target.closest('[data-close]')) closeSheet(sh); });
+});
+
+/* ============================ 1 · Einstellungen ============================ */
+const SETTINGS_KEY='vn.settings.v1';
+const defaults={
+  lang:'de', theme:'auto',
+  cmds:true, fillers:false, autoPunct:true, vocabFuzzy:true, wakeLock:true,
+  autoStop:false, autoPro:false,
+  vocab:'', apiKey:'', baseUrl:'https://api.openai.com/v1',
+  model:'gpt-4o-transcribe', chatModel:'gpt-4o-mini'
+};
+let S = Object.assign({},defaults);
+try{ Object.assign(S, JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}')); }catch(e){}
+const saveSettings=()=>localStorage.setItem(SETTINGS_KEY,JSON.stringify(S));
+const hasKey=()=>!!(S.apiKey&&S.apiKey.trim());
+
+function applyTheme(){
+  const t = S.theme==='auto'
+    ? (matchMedia('(prefers-color-scheme: light)').matches?'light':'dark')
+    : S.theme;
+  document.documentElement.dataset.theme=t;
+  $('meta[name=theme-color]').setAttribute('content', t==='light'?'#f5f7fb':'#0e1116');
+}
+matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>{ if(S.theme==='auto') applyTheme(); });
+
+/* ============================ 2 · Datenbank (IndexedDB) ============================ */
+const DB={ _p:null,
+  open(){
+    if(this._p) return this._p;
+    this._p=new Promise((res,rej)=>{
+      const r=indexedDB.open('voicenotes',1);
+      r.onupgradeneeded=()=>{
+        const db=r.result;
+        if(!db.objectStoreNames.contains('sessions')){
+          const st=db.createObjectStore('sessions',{keyPath:'id'});
+          st.createIndex('createdAt','createdAt');
+        }
+        if(!db.objectStoreNames.contains('audio')) db.createObjectStore('audio',{keyPath:'id'});
+      };
+      r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
+    });
+    return this._p;
+  },
+  async tx(store,mode,fn){
+    const db=await this.open();
+    return new Promise((res,rej)=>{
+      const t=db.transaction(store,mode), s=t.objectStore(store);
+      let out; try{ out=fn(s); }catch(e){ rej(e); return; }
+      t.oncomplete=()=>res(out&&out.result!==undefined?out.result:out);
+      t.onerror=()=>rej(t.error);
+    });
+  },
+  put(store,val){ return this.tx(store,'readwrite',s=>s.put(val)); },
+  get(store,id){ return this.tx(store,'readonly',s=>s.get(id)); },
+  del(store,id){ return this.tx(store,'readwrite',s=>s.delete(id)); },
+  all(store){ return this.tx(store,'readonly',s=>s.getAll()); },
+  clear(store){ return this.tx(store,'readwrite',s=>s.clear()); }
+};
+
+/* ============================ 3 · Textwerkzeuge ============================ */
+
+/* --- 3a · Diktier-Befehle ------------------------------------------------ */
+/* Wortgrenzen unicode-sicher — \b kennt keine Umlaute */
+const W='[\\p{L}\\p{N}]';
+const word=(src,flags='giu')=>new RegExp('(?<!'+W+')(?:'+src+')(?!'+W+')',flags);
+const COMMANDS=[
+  [word('neuer absatz|neue zeile absatz|new paragraph'),'\n\n'],
+  [word('neue zeile|zeilenumbruch|new line|line break'),'\n'],
+  [word('fragezeichen|question mark'),'?'],
+  [word('ausrufezeichen|exclamation (?:mark|point)'),'!'],
+  [word('doppelpunkt|colon'),':'],
+  [word('semikolon|strichpunkt|semicolon'),';'],
+  [word('gedankenstrich|bindestrich|dash|hyphen'),'–'],
+  [word('anführungszeichen auf|zitat anfang|open quote'),'„'],
+  [word('anführungszeichen zu|zitat ende|close quote|end quote'),'“'],
+  [word('klammer auf|open (?:paren|parenthesis|bracket)'),'('],
+  [word('klammer zu|close (?:paren|parenthesis|bracket)'),')'],
+  [word('komma|comma'),','],
+  [word('punkt|satzende|period|full stop'),'.'],
+  [word('smiley|smiley gesicht|smiley face'),'🙂'],
+  [word('daumen hoch|thumbs up'),'👍']
+];
+const DELETE_CMD=word('streich das|streiche das|lösch das|lösche das|scratch that|delete that','iu');
+
+function applyCommands(text){
+  if(!S.cmds) return {text,deleteLast:false};
+  let del=false;
+  if(DELETE_CMD.test(text)){ del=true; text=text.replace(DELETE_CMD,' '); }
+  for(const [re,rep] of COMMANDS) text=text.replace(re,rep);
+  return {text:tidySpacing(text),deleteLast:del};
+}
+/* Leerzeichen um eingefügte Satzzeichen korrigieren */
+function tidySpacing(t){
+  return t
+    .replace(/\s+([,.;:!?])/g,'$1')
+    .replace(/([,.;:!?])(?=[^\s\d.,;:!?])/g,'$1 ')
+    .replace(/„\s+/g,'„').replace(/\s+“/g,'“')
+    .replace(/\(\s+/g,'(').replace(/\s+\)/g,')')
+    .replace(/[ \t]{2,}/g,' ')
+    .replace(/ *\n */g,'\n')
+    .trim();
+}
+
+/* --- 3b · Füllwörter ----------------------------------------------------- */
+const FILLERS=new RegExp(
+  '(?<!'+W+')(?:äh+m*|ähm+|ehm|öhm|hm+|halt|sozusagen|quasi|irgendwie|also gut|weisst du|weißt du|'
+  +'uh+|um+|erm|like|you know|i mean|kind of|sort of)(?!'+W+'),?\\s*','giu');
+const stripFillers=t=>tidySpacing(t.replace(FILLERS,' '));
+
+/* --- 3c · Eigener Wortschatz -------------------------------------------- */
+function parseVocab(raw){
+  const out=[];
+  (raw||'').split('\n').map(l=>l.trim()).filter(Boolean).forEach(line=>{
+    const m=line.split(/=>|->/);
+    if(m.length>1) out.push({from:m[0].trim(), to:m.slice(1).join('=>').trim(), exact:true});
+    else out.push({from:line, to:line, exact:false});
+  });
+  return out;
+}
+function levenshtein(a,b){
+  if(a===b) return 0;
+  if(Math.abs(a.length-b.length)>3) return 9;
+  const prev=Array(b.length+1).fill(0).map((_,i)=>i);
+  for(let i=1;i<=a.length;i++){
+    let cur=[i];
+    for(let j=1;j<=b.length;j++)
+      cur[j]=Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1));
+    for(let j=0;j<=b.length;j++) prev[j]=cur[j];
+  }
+  return prev[b.length];
+}
+function applyVocab(text){
+  const list=parseVocab(S.vocab); if(!list.length) return text;
+  /* 1. explizite Ersetzungen */
+  for(const v of list.filter(v=>v.exact)){
+    const re=word(v.from.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
+    text=text.replace(re,v.to);
+  }
+  /* 2. unscharfe Korrektur auf die Zielwörter */
+  if(S.vocabFuzzy){
+    const targets=list.map(v=>v.to).filter(t=>t.length>=4);
+    text=text.replace(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu, w=>{
+      if(targets.some(t=>t.toLowerCase()===w.toLowerCase())) return w;
+      for(const t of targets){
+        const max = t.length>=8?2:1;
+        if(Math.abs(t.length-w.length)<=max && levenshtein(w.toLowerCase(),t.toLowerCase())<=max) return t;
+      }
+      return w;
+    });
+  }
+  return text;
+}
+
+/* --- 3d · Zeichensetzung ------------------------------------------------- */
+function autoPunctuate(text,{endSentence=true}={}){
+  if(!S.autoPunct) return text;
+  let t=text.trim(); if(!t) return t;
+  t=t.replace(/(^|[.!?…]\s+|\n\s*)([\p{Ll}])/gu,(m,p,c)=>p+c.toLocaleUpperCase('de-DE'));
+  if(endSentence && !/[.!?…:,;–\-"“”)\]]$/.test(t)) t+='.';
+  return t;
+}
+
+/* --- 3e · Sprach-Heuristik für den Mix-Modus ---------------------------- */
+const DE_WORDS=new Set('der die das den dem des und ich du er sie es wir ihr nicht ist bin sind war waren ein eine einen einem mit auf für aber dass wenn schon noch mal doch sehr auch nur haben hat hab habe kann muss möchte machen gemacht gut hallo danke bitte heute morgen jetzt hier oder als über unter zwischen weil damit ja nein was wie wo wer warum wieder immer vielleicht eigentlich zum zur vom beim ins'.split(' '));
+const EN_WORDS=new Set('the a an and i you he she it we they is are was were not to of in on for with that if but so just very good hello thanks please today tomorrow now here or as about under between because can must want make made do does did have has had what how where who why always maybe actually this these those there their'.split(' '));
+function langScore(text,lang){
+  const words=text.toLowerCase().match(/[\p{L}']+/gu)||[];
+  if(!words.length) return 0;
+  const set = lang==='de'?DE_WORDS:EN_WORDS;
+  let hits=0; for(const w of words) if(set.has(w)) hits++;
+  return hits/words.length;
+}
+
+/* ============================ 4 · Sitzungszustand & Audio ============================ */
+const ST={ IDLE:'idle', REC:'rec', PAUSE:'pause', DONE:'done' };
+let state=ST.IDLE;
+
+let session=null;                 // aktuelle Sitzung (siehe newSession)
+let stream=null, recorder=null, chunks=[];
+let actx=null, analyser=null, srcNode=null, waveRAF=0, freqData=null;
+let recStart=0, pausedAt=0, pausedTotal=0, tickTimer=0, wakeSentinel=null;
+let lastVoiceAt=0, lastSilenceSplit=0;
+
+function newSession(){
+  session={
+    id:uid(), title:'', createdAt:Date.now(), durationMs:0,
+    lang:S.lang, segments:[], pro:null, proMeta:null, view:'live',
+    marks:[], speaker:'A', ai:null, audioType:'', audioSize:0, pinned:false
+  };
+  audioURL&&URL.revokeObjectURL(audioURL); audioURL=null; audioBlob=null;
+  $('#player').removeAttribute('src'); $('#playCard').style.display='none';
+  $('#aiCard').style.display='none';
+  pausedTotal=0; recStart=0;
+  setTitle('Neue Aufnahme');
+  render(); updateStats(); updateTimer(0);
+}
+
+function setTitle(t){ $('#sessTitle').textContent=t; }
+function elapsed(){
+  if(!recStart) return session? session.durationMs/1000 : 0;
+  const end = state===ST.PAUSE ? pausedAt : Date.now();
+  return (end-recStart-pausedTotal)/1000;
+}
+
+/* --- 4a · Aufnahme starten ---------------------------------------------- */
+async function startRecording(){
+  if(state===ST.REC) return;
+  if(state===ST.PAUSE) return resumeRecording();
+  if(state===ST.DONE && session.segments.length){
+    if(!confirm('Aktuelle Sitzung ist gespeichert. Neue Aufnahme starten?')) return;
+    newSession();
+  }
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:{
+      echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1
+    }});
+  }catch(e){
+    toast('Kein Mikrofonzugriff: '+e.name); return;
+  }
+  chunks=[];
+  const mime=['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus']
+    .find(m=>window.MediaRecorder&&MediaRecorder.isTypeSupported(m))||'';
+  try{
+    recorder=new MediaRecorder(stream, mime?{mimeType:mime,audioBitsPerSecond:96000}:undefined);
+    recorder.ondataavailable=e=>{ e.data&&e.data.size&&chunks.push(e.data); };
+    recorder.onstop=onRecorderStop;
+    recorder.start(1000);
+  }catch(e){ recorder=null; console.warn('MediaRecorder nicht verfügbar',e); }
+
+  startMeter(stream);
+  recStart=Date.now(); pausedTotal=0; lastVoiceAt=Date.now(); lastSilenceSplit=0;
+  state=ST.REC; syncUI();
+  startEngine();
+  tickTimer=setInterval(onTick,200);
+  requestWakeLock();
+}
+
+function pauseRecording(){
+  if(state!==ST.REC) return;
+  pausedAt=Date.now(); state=ST.PAUSE; syncUI();
+  stopEngine(); recorder&&recorder.state==='recording'&&recorder.pause();
+}
+function resumeRecording(){
+  if(state!==ST.PAUSE) return;
+  pausedTotal+=Date.now()-pausedAt; state=ST.REC; syncUI();
+  recorder&&recorder.state==='paused'&&recorder.resume();
+  startEngine(); lastVoiceAt=Date.now();
+}
+async function stopRecording(){
+  if(state!==ST.REC&&state!==ST.PAUSE) return;
+  const dur=elapsed();
+  state=ST.DONE; clearInterval(tickTimer); stopEngine(); stopMeter(); releaseWakeLock();
+  session.durationMs=Math.round(dur*1000);
+  if(recorder&&recorder.state!=='inactive') recorder.stop(); else finishSession();
+  stream&&stream.getTracks().forEach(t=>t.stop()); stream=null;
+  syncUI();
+}
+function onRecorderStop(){
+  audioBlob=new Blob(chunks,{type:recorder.mimeType||'audio/webm'});
+  session.audioType=audioBlob.type; session.audioSize=audioBlob.size;
+  audioURL=URL.createObjectURL(audioBlob);
+  $('#player').src=audioURL; $('#playCard').style.display='';
+  syncUI();
+  finishSession();
+}
+async function finishSession(){
+  if(!session.segments.length){ toast('Nichts erkannt — Aufnahme verworfen'); return; }
+  if(!session.title) session.title=autoTitle();
+  setTitle(session.title);
+  await persist();
+  toast('Gespeichert · '+fmtTime(session.durationMs/1000));
+  if(S.autoPro&&hasKey()&&audioBlob) runPro();
+}
+function autoTitle(){
+  const t=segsText(session.segments).replace(/\s+/g,' ').trim();
+  return (t.split(/(?<=[.!?])\s/)[0]||t).slice(0,60)||'Aufnahme '+fmtDate(session.createdAt);
+}
+async function persist(){
+  if(!session||!session.segments.length) return;
+  const rec=Object.assign({},session);
+  rec.wordCount=countWords(segsText(activeSegs()));
+  await DB.put('sessions',rec);
+  if(audioBlob) await DB.put('audio',{id:session.id,blob:audioBlob});
+}
+
+/* --- 4b · Pegel & Wellenform -------------------------------------------- */
+function startMeter(st){
+  try{
+    actx=new (window.AudioContext||window.webkitAudioContext)();
+    srcNode=actx.createMediaStreamSource(st);
+    analyser=actx.createAnalyser(); analyser.fftSize=1024; analyser.smoothingTimeConstant=.75;
+    srcNode.connect(analyser);
+    freqData=new Uint8Array(analyser.fftSize);
+    drawWave();
+  }catch(e){ console.warn('Analyser',e); }
+}
+function stopMeter(){
+  cancelAnimationFrame(waveRAF); waveRAF=0;
+  try{ srcNode&&srcNode.disconnect(); actx&&actx.close(); }catch(e){}
+  actx=null; analyser=null; srcNode=null;
+  setTimeout(drawIdleWave,60);
+}
+const waveHist=[];
+function rms(){
+  if(!analyser) return 0;
+  analyser.getByteTimeDomainData(freqData);
+  let sum=0; for(let i=0;i<freqData.length;i++){ const v=(freqData[i]-128)/128; sum+=v*v; }
+  return Math.sqrt(sum/freqData.length);
+}
+function waveCtx(){
+  const c=$('#wave'), dpr=Math.min(devicePixelRatio||1,2);
+  const w=c.clientWidth, h=c.clientHeight;
+  if(c.width!==w*dpr||c.height!==h*dpr){ c.width=w*dpr; c.height=h*dpr; }
+  const x=c.getContext('2d'); x.setTransform(dpr,0,0,dpr,0,0); x.clearRect(0,0,w,h);
+  return {x,w,h};
+}
+function drawWave(){
+  const lvl=rms();
+  if(lvl>0.035) lastVoiceAt=Date.now();
+  waveHist.push(lvl); if(waveHist.length>220) waveHist.shift();
+  const {x,w,h}=waveCtx(), cy=h/2, bw=3, gap=2, n=Math.floor(w/(bw+gap));
+  const css=getComputedStyle(document.documentElement);
+  const g=x.createLinearGradient(0,0,w,0);
+  g.addColorStop(0,css.getPropertyValue('--acc').trim()); g.addColorStop(1,css.getPropertyValue('--acc2').trim());
+  x.fillStyle=g;
+  for(let i=0;i<n;i++){
+    const v=waveHist[waveHist.length-n+i]||0;
+    const bh=Math.max(2,Math.min(h-8, v*h*3.2));
+    x.beginPath();
+    const rx=w-(n-i)*(bw+gap);
+    x.roundRect? x.roundRect(rx,cy-bh/2,bw,bh,2) : x.rect(rx,cy-bh/2,bw,bh);
+    x.fill();
+  }
+  waveRAF=requestAnimationFrame(drawWave);
+}
+function drawIdleWave(){
+  const {x,w,h}=waveCtx(), cy=h/2;
+  x.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--line').trim();
+  x.lineWidth=2; x.beginPath(); x.moveTo(10,cy); x.lineTo(w-10,cy); x.stroke();
+}
+addEventListener('resize',()=>{ if(!waveRAF) drawIdleWave(); });
+
+/* --- 4c · Takt: Timer, Stille-Erkennung --------------------------------- */
+function onTick(){
+  const el=elapsed(); updateTimer(el);
+  const silence=(Date.now()-lastVoiceAt)/1000;
+  /* Absatz nach längerer Pause */
+  if(silence>1.5 && el-lastSilenceSplit>2 && session.segments.length){
+    const last=session.segments[session.segments.length-1];
+    if(!last.para){ last.para=true; lastSilenceSplit=el; render(); }
+  }
+  if(S.autoStop && silence>20 && state===ST.REC){ toast('Auto-Stopp nach 20 s Stille'); stopRecording(); }
+}
+function updateTimer(sec){ $('#timer').textContent=fmtTime(sec); }
+function countWords(t){ return (String(t).match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)||[]).length; }
+function updateStats(){
+  const w=countWords(segsText(activeSegs()));
+  const mins=Math.max(elapsed()/60, (session?session.durationMs:0)/60000);
+  $('#stWords').textContent=w;
+  $('#stWpm').textContent= mins>0.02? Math.round(w/mins) : 0;
+  $('#stMarks').textContent=session?session.marks.length:0;
+}
+
+/* --- 4d · Bildschirm anlassen ------------------------------------------- */
+async function requestWakeLock(){
+  if(!S.wakeLock||!('wakeLock' in navigator)) return;
+  try{ wakeSentinel=await navigator.wakeLock.request('screen'); }catch(e){}
+}
+function releaseWakeLock(){ try{ wakeSentinel&&wakeSentinel.release(); }catch(e){} wakeSentinel=null; }
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&state===ST.REC) requestWakeLock();
+});
+
+/* ============================ 5 · Live-Erkennung ============================ */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const SR_OK = !!SR;
+let engines=[];        // laufende Erkenner
+let mixPending=[];     // Ergebnisse, die auf den Gegenspieler warten
+const LANGTAG={de:'de-DE',en:'en-US'};
+
+function enginesFor(mode){ return mode==='mix' ? ['de','en'] : [mode]; }
+
+function startEngine(){
+  stopEngine();
+  if(!SR_OK) return;
+  enginesFor(session.lang).forEach(lang=>engines.push(makeEngine(lang)));
+  engines.forEach(e=>e.start());
+}
+function stopEngine(){
+  engines.forEach(e=>e.stop());
+  engines=[];
+  mixPending.forEach(p=>clearTimeout(p.timer)); mixPending=[];
+  $('#interim').textContent='';
+}
+
+function makeEngine(lang){
+  const rec=new SR();
+  rec.lang=LANGTAG[lang]; rec.continuous=true; rec.interimResults=true; rec.maxAlternatives=1;
+  const E={lang, rec, alive:false, lastStart:0, interim:'', interimStart:0, retries:0};
+
+  rec.onstart=()=>{ E.alive=true; E.retries=0; };
+  rec.onerror=ev=>{
+    if(ev.error==='not-allowed'||ev.error==='service-not-allowed'){
+      toast('Spracherkennung blockiert — bitte Mikrofon erlauben'); E.dead=true;
+    } else if(ev.error==='network'){
+      toast('Spracherkennung braucht Internet');
+    }
+  };
+  rec.onend=()=>{
+    E.alive=false;
+    if(E.dead || state!==ST.REC || !engines.includes(E)) return;
+    /* Chrome beendet nach Sprechpausen von selbst → neu starten, mit Bremse */
+    const wait=Math.min(1200, Math.max(120, 300-(Date.now()-E.lastStart)));
+    setTimeout(()=>{ if(state===ST.REC&&engines.includes(E)) E.start(); }, wait);
+  };
+  rec.onresult=ev=>{
+    let interim='';
+    for(let i=ev.resultIndex;i<ev.results.length;i++){
+      const r=ev.results[i], alt=r[0];
+      if(r.isFinal){
+        const t=(alt.transcript||'').trim();
+        if(t) handleFinal(E,t, typeof alt.confidence==='number'?alt.confidence:0.6);
+        E.interimStart=0;
+      }else{
+        interim+=alt.transcript;
+        if(!E.interimStart) E.interimStart=elapsed();
+      }
+    }
+    E.interim=interim.trim();
+    showInterim();
+  };
+  E.start=()=>{ try{ E.lastStart=Date.now(); rec.start(); }catch(e){} };
+  E.stop =()=>{ E.dead=true; try{ rec.abort(); }catch(e){} };
+  return E;
+}
+
+function showInterim(){
+  const t=engines.map(e=>e.interim).filter(Boolean).sort((a,b)=>b.length-a.length)[0]||'';
+  $('#interim').textContent=t;
+}
+
+/* Mix-Modus: das Ergebnis mit der besseren Bewertung gewinnt ------------- */
+function scoreOf(p){
+  /* Erkenner-Confidence + Bonus für typische Wörter der Sprache */
+  return p.conf*0.7 + langScore(p.text,p.lang)*0.9 + (p.lang===primaryLang()?0.03:0);
+}
+function primaryLang(){ return session.lang==='en'?'en':'de'; }
+
+function handleFinal(E,text,conf){
+  const item={lang:E.lang,text,conf,tStart:E.interimStart||Math.max(0,elapsed()-1.5),tEnd:elapsed()};
+  if(session.lang!=='mix'){ commitSegment(item); return; }
+  const i=mixPending.findIndex(p=>p.lang!==item.lang && Math.abs(p.tStart-item.tStart)<2.5);
+  if(i>=0){
+    const other=mixPending.splice(i,1)[0]; clearTimeout(other.timer);
+    commitSegment(scoreOf(item)>=scoreOf(other)?item:other);
+  }else{
+    item.timer=setTimeout(()=>{
+      const j=mixPending.indexOf(item); if(j>=0) mixPending.splice(j,1);
+      commitSegment(item);
+    },900);
+    mixPending.push(item);
+  }
+}
+
+/* ============================ 6 · Segmente ============================ */
+function commitSegment(item){
+  let {text}=item;
+  const cmd=applyCommands(text);
+  text=cmd.text;
+  if(cmd.deleteLast){
+    session.segments.pop();
+    if(!text){ render(); updateStats(); return; }
+  }
+  text=applyVocab(text);
+  text=autoPunctuate(text);
+  if(!text) return;
+  const seg={
+    id:uid(), text, raw:item.text, lang:item.lang, conf:+(item.conf||0).toFixed(3),
+    tStart:+item.tStart.toFixed(2), tEnd:+item.tEnd.toFixed(2),
+    source:'live', speaker:session.speaker, marked:false, para:false
+  };
+  session.segments.push(seg);
+  render(true); updateStats();
+  if(state===ST.DONE) persist();
+}
+
+function activeSegs(){
+  return (session.view==='pro'&&session.pro)? session.pro : session.segments;
+}
+function segsText(segs,{withTime=false}={}){
+  if(!segs||!segs.length) return '';
+  let out='';
+  segs.forEach((s,i)=>{
+    const t=displayText(s);
+    if(withTime) out+='['+fmtTime(s.tStart)+'] ';
+    out+=t;
+    out+= s.para||i===segs.length-1 ? '\n\n' : ' ';
+  });
+  return out.trim();
+}
+function displayText(seg){
+  let t=seg.text;
+  if(S.fillers) t=stripFillers(t);
+  return t;
+}
+
+function render(scroll=false){
+  const box=$('#transcript'), segs=activeSegs();
+  if(!segs.length){
+    box.innerHTML='<div class="empty"><span class="big">🎧</span>'+
+      (SR_OK?'Tippe auf das Mikrofon und sprich einfach los.':'Aufnahme starten — das Transkript kommt danach aus dem Pro-Modus.')+
+      '</div>';
+    return;
+  }
+  box.innerHTML='';
+  const frag=document.createDocumentFragment();
+  segs.forEach(seg=>{
+    const d=document.createElement('div');
+    d.className='seg'+(seg.marked?' marked':'')+(seg.speaker==='B'?' spkB':'');
+    d.dataset.id=seg.id; d.dataset.start=seg.tStart;
+    const badge = seg.source==='pro' ? '<span class="badge pro">PRO</span>'
+      : '<span class="badge '+seg.lang+'">'+(seg.lang==='de'?'DE':'EN')+'</span>';
+    d.innerHTML=
+      '<div class="meta">'+badge+
+      '<span>'+fmtTime(seg.tStart)+'</span>'+
+      (seg.speaker==='B'?'<span>Sprecher B</span>':'')+
+      (seg.conf?'<span title="Erkennungssicherheit">'+Math.round(seg.conf*100)+'%</span>':'')+
+      '</div>'+
+      '<div class="txt" contenteditable="true" spellcheck="true">'+esc(displayText(seg))+'</div>';
+    const txt=d.querySelector('.txt');
+    txt.addEventListener('blur',()=>{
+      const v=txt.innerText.trim();
+      if(v!==seg.text){ seg.text=v; seg.source= seg.source==='pro'?'pro':'edited'; persist(); updateStats(); }
+    });
+    d.querySelector('.meta').addEventListener('click',()=>seekTo(seg.tStart));
+    frag.appendChild(d);
+  });
+  box.appendChild(frag);
+  if(scroll) box.lastElementChild&&box.lastElementChild.scrollIntoView({block:'nearest',behavior:'smooth'});
+}
+
+/* ============================ 7 · Wiedergabe ============================ */
+let audioBlob=null, audioURL=null;
+const player=$('#player');
+const SPEEDS=[1,1.25,1.5,2,0.75];
+let speedIdx=0;
+
+$('#btnPlay').onclick=()=>{ player.paused? player.play() : player.pause(); };
+$('#btnSpeed').onclick=()=>{
+  speedIdx=(speedIdx+1)%SPEEDS.length; player.playbackRate=SPEEDS[speedIdx];
+  $('#btnSpeed').textContent=SPEEDS[speedIdx]+'×';
+};
+/* MediaRecorder-WebM meldet oft keine oder eine unendliche Länge → eigene Dauer nutzen */
+function playDur(){
+  return isFinite(player.duration)&&player.duration>0 ? player.duration : (session.durationMs/1000||0);
+}
+$('#seek').oninput=e=>{ const d=playDur(); if(d) player.currentTime=d*e.target.value/1000; };
+player.onplay =()=>$('#btnPlay').textContent='⏸';
+player.onpause=()=>$('#btnPlay').textContent='▶︎';
+player.ontimeupdate=()=>{
+  const d=playDur();
+  $('#playTime').textContent=fmtTime(player.currentTime)+' / '+fmtTime(d);
+  if(d) $('#seek').value=Math.round(player.currentTime/d*1000);
+  highlight(player.currentTime);
+};
+function seekTo(t){
+  if(!player.src) return;
+  player.currentTime=Math.max(0,t-0.15);
+  player.play().catch(()=>{});
+}
+let lastHi=null;
+function highlight(t){
+  const segs=activeSegs();
+  const cur=segs.find(s=>t>=s.tStart&&t<(s.tEnd||s.tStart+3));
+  const id=cur?cur.id:null;
+  if(id===lastHi) return; lastHi=id;
+  $$('.seg').forEach(el=>el.classList.toggle('active',el.dataset.id===id));
+  const el=id&&$('.seg[data-id="'+id+'"]');
+  el&&el.scrollIntoView({block:'nearest'});
+}
+
+/* ============================ 8 · Export ============================ */
+function srtTime(s,comma=true){
+  const total=Math.round(Math.max(0,s)*1000);          // Rundung statt Abschneiden: 2.4 s → …,400
+  const ms=total%1000, x=(total-ms)/1000;
+  const p=n=>String(n).padStart(2,'0');
+  return p(Math.floor(x/3600))+':'+p(Math.floor(x%3600/60))+':'+p(x%60)+(comma?',':'.')+String(ms).padStart(3,'0');
+}
+function toSubtitles(vtt=false){
+  const segs=activeSegs();
+  let out= vtt? 'WEBVTT\n\n' : '';
+  segs.forEach((s,i)=>{
+    const end=Math.max(s.tEnd||0, s.tStart+1.2);
+    out+= (vtt?'':(i+1)+'\n')
+      + srtTime(s.tStart,!vtt)+' --> '+srtTime(end,!vtt)+'\n'
+      + displayText(s)+'\n\n';
+  });
+  return out;
+}
+function toMarkdown(){
+  const segs=activeSegs();
+  let out='# '+(session.title||'Aufnahme')+'\n\n'
+    +'*'+fmtDate(session.createdAt)+' · '+fmtTime(session.durationMs/1000)
+    +' · '+countWords(segsText(segs))+' Wörter · '+({de:'Deutsch',en:'Englisch',mix:'Deutsch + Englisch'}[session.lang])+'*\n\n';
+  if(session.marks.length) out+='**Marken:** '+session.marks.map(m=>fmtTime(m)).join(', ')+'\n\n';
+  segs.forEach((s,i)=>{
+    out+='`'+fmtTime(s.tStart)+'` '+displayText(s)+(s.para||i===segs.length-1?'\n\n':' ');
+  });
+  if(session.ai) out+='\n---\n\n## KI-Notiz\n\n'+session.ai+'\n';
+  return out;
+}
+function baseName(){
+  return (session.title||'transkript').replace(/[^\p{L}\p{N} _-]/gu,'').trim().slice(0,50).replace(/\s+/g,'_')||'transkript';
+}
+function exportMenu(anchor){
+  const has=activeSegs().length>0;
+  popMenu(anchor,[
+    {icon:'📄',label:'Text (.txt)',disabled:!has,act:()=>download(baseName()+'.txt',segsText(activeSegs()))},
+    {icon:'📝',label:'Markdown (.md)',disabled:!has,act:()=>download(baseName()+'.md',toMarkdown(),'text/markdown')},
+    {icon:'🎬',label:'Untertitel (.srt)',disabled:!has,act:()=>download(baseName()+'.srt',toSubtitles(false),'application/x-subrip')},
+    {icon:'🎞️',label:'Untertitel (.vtt)',disabled:!has,act:()=>download(baseName()+'.vtt',toSubtitles(true),'text/vtt')},
+    {icon:'🧾',label:'Mit Zeitstempeln (.txt)',disabled:!has,act:()=>download(baseName()+'_zeiten.txt',segsText(activeSegs(),{withTime:true}))},
+    {icon:'{}',label:'Daten (.json)',disabled:!has,act:()=>download(baseName()+'.json',JSON.stringify(session,null,2),'application/json')},
+    '-',
+    {icon:'🎵',label:'Audio speichern',disabled:!audioBlob,act:()=>download(baseName()+(/(mp4)/.test(session.audioType)?'.m4a':'.webm'),audioBlob)}
+  ]);
+}
+async function copyText(t){
+  try{ await navigator.clipboard.writeText(t); toast('Kopiert'); }
+  catch(e){
+    const ta=document.createElement('textarea'); ta.value=t; document.body.appendChild(ta);
+    ta.select(); document.execCommand('copy'); ta.remove(); toast('Kopiert');
+  }
+}
+async function shareText(){
+  const text=segsText(activeSegs());
+  if(!text) return toast('Nichts zu teilen');
+  if(navigator.share){ try{ await navigator.share({title:session.title||'Transkript',text}); }catch(e){} }
+  else copyText(text);
+}
+
+/* ============================ 9 · Pro-Modus & KI ============================ */
+function api(path){ return (S.baseUrl||defaults.baseUrl).replace(/\/+$/,'')+path; }
+function vocabPrompt(){
+  const words=parseVocab(S.vocab).map(v=>v.to);
+  return words.length? 'Eigennamen und Fachbegriffe, die vorkommen können: '+words.join(', ')+'.' : '';
+}
+function proProgress(pct,msg){
+  $('#proBar').classList.toggle('hidden',pct<0);
+  $('#proFill').style.width=clamp(pct,0,100)+'%';
+  $('#proMsg').textContent=msg||'';
+}
+
+async function runPro(){
+  if(!hasKey()) { openSheet('#sheetSettings'); return toast('Dafür brauchst du einen API-Key'); }
+  if(!audioBlob) return toast('Keine Aufnahme vorhanden');
+  if(runPro._busy) return; runPro._busy=true;
+  try{
+    proProgress(4,'Audio wird vorbereitet …');
+    const parts=await prepareAudioParts(audioBlob);
+    let segs=[], offset=0;
+    for(let i=0;i<parts.length;i++){
+      proProgress(8+i/parts.length*84, 'Transkription '+(i+1)+'/'+parts.length+' …');
+      const res=await transcribePart(parts[i].blob, parts[i].name);
+      if(res.segments&&res.segments.length){
+        res.segments.forEach(s=>segs.push({
+          id:uid(), text:s.text.trim(), lang:guessLang(s.text), conf:0,
+          tStart:+(s.start+offset).toFixed(2), tEnd:+(s.end+offset).toFixed(2),
+          source:'pro', speaker:'A', marked:false, para:false
+        }));
+      }else if(res.text){
+        segs=segs.concat(splitToSegments(res.text, offset, parts[i].duration));
+      }
+      offset+=parts[i].duration;
+    }
+    if(!segs.length) throw new Error('Leeres Ergebnis');
+    segs.forEach(s=>{ s.text=applyVocab(s.text); });
+    session.pro=segs; session.view='pro'; session.proMeta={model:S.model,at:Date.now()};
+    if(!session.title||/^Aufnahme /.test(session.title)) { session.title=autoTitle(); setTitle(session.title); }
+    proProgress(100,'Fertig'); setTimeout(()=>proProgress(-1),900);
+    render(); updateStats(); syncUI(); persist();
+    toast('Pro-Transkript erstellt');
+  }catch(e){
+    proProgress(-1); toast('Pro-Modus fehlgeschlagen: '+e.message);
+    console.error(e);
+  }finally{ runPro._busy=false; }
+}
+
+async function transcribePart(blob,name){
+  const fd=new FormData();
+  fd.append('file',blob,name);
+  fd.append('model',S.model);
+  if(session.lang!=='mix') fd.append('language',session.lang);   // Mix: Modell entscheidet selbst
+  const vp=vocabPrompt(); if(vp) fd.append('prompt',vp);
+  if(S.model==='whisper-1'){
+    fd.append('response_format','verbose_json');
+    fd.append('timestamp_granularities[]','segment');
+  }else{
+    fd.append('response_format','json');
+  }
+  const r=await fetch(api('/audio/transcriptions'),{
+    method:'POST', headers:{Authorization:'Bearer '+S.apiKey.trim()}, body:fd
+  });
+  if(!r.ok) throw new Error(await errText(r));
+  return r.json();
+}
+async function errText(r){
+  try{ const j=await r.json(); return (j.error&&j.error.message)||r.status+' '+r.statusText; }
+  catch(e){ return r.status+' '+r.statusText; }
+}
+/* Ohne Zeitstempel: Text in Sätze schneiden und über die Dauer verteilen */
+function splitToSegments(text,offset,duration){
+  const sentences=text.replace(/\s+/g,' ').match(/[^.!?…]+[.!?…]*/g)||[text];
+  const total=sentences.reduce((a,s)=>a+s.length,0)||1;
+  let t=offset;
+  return sentences.map(s=>{
+    const d=duration*s.length/total, seg={
+      id:uid(), text:s.trim(), lang:guessLang(s), conf:0,
+      tStart:+t.toFixed(2), tEnd:+(t+d).toFixed(2), source:'pro', speaker:'A', marked:false, para:false
+    };
+    t+=d; return seg;
+  }).filter(s=>s.text);
+}
+function guessLang(t){ return langScore(t,'en')>langScore(t,'de')?'en':'de'; }
+
+/* Große/lange Aufnahmen: dekodieren, auf 16 kHz Mono bringen, als WAV stückeln */
+const MAX_DIRECT=20*1024*1024, CHUNK_SEC=600;
+async function prepareAudioParts(blob){
+  const durGuess=session.durationMs/1000||0;
+  if(blob.size<=MAX_DIRECT && durGuess<=CHUNK_SEC)
+    return [{blob, name:'audio'+(/(mp4)/.test(blob.type)?'.m4a':'.webm'), duration:durGuess||CHUNK_SEC}];
+  const buf=await blob.arrayBuffer();
+  const ac=new (window.AudioContext||window.webkitAudioContext)();
+  const decoded=await ac.decodeAudioData(buf); ac.close();
+  const parts=[]; const n=Math.ceil(decoded.duration/CHUNK_SEC);
+  for(let i=0;i<n;i++){
+    const from=i*CHUNK_SEC, to=Math.min(decoded.duration,(i+1)*CHUNK_SEC);
+    parts.push({blob:await sliceToWav(decoded,from,to), name:'part'+i+'.wav', duration:to-from});
+  }
+  return parts;
+}
+async function sliceToWav(buffer,from,to){
+  const rate=16000, len=Math.round((to-from)*rate);
+  const off=new OfflineAudioContext(1,len,rate);
+  const src=off.createBufferSource();
+  const cut=new AudioBuffer({length:Math.round((to-from)*buffer.sampleRate),sampleRate:buffer.sampleRate,numberOfChannels:1});
+  const tmp=new Float32Array(cut.length);
+  const start=Math.round(from*buffer.sampleRate);
+  const ch0=buffer.getChannelData(0);
+  for(let i=0;i<cut.length;i++){
+    let v=ch0[start+i]||0;
+    for(let c=1;c<buffer.numberOfChannels;c++) v=(v+(buffer.getChannelData(c)[start+i]||0))/2;
+    tmp[i]=v;
+  }
+  cut.copyToChannel(tmp,0);
+  src.buffer=cut; src.connect(off.destination); src.start();
+  return wavBlob(await off.startRendering());
+}
+function wavBlob(ab){
+  const d=ab.getChannelData(0), n=d.length, rate=ab.sampleRate;
+  const buf=new ArrayBuffer(44+n*2), v=new DataView(buf);
+  const str=(o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i,s.charCodeAt(i)); };
+  str(0,'RIFF'); v.setUint32(4,36+n*2,true); str(8,'WAVEfmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,rate,true); v.setUint32(28,rate*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+  str(36,'data'); v.setUint32(40,n*2,true);
+  for(let i=0;i<n;i++) v.setInt16(44+i*2, clamp(d[i],-1,1)*32767, true);
+  return new Blob([buf],{type:'audio/wav'});
+}
+
+/* --- 9b · Textmodell ----------------------------------------------------- */
+async function chat(system,user){
+  const r=await fetch(api('/chat/completions'),{
+    method:'POST',
+    headers:{'Content-Type':'application/json',Authorization:'Bearer '+S.apiKey.trim()},
+    body:JSON.stringify({model:S.chatModel||'gpt-4o-mini',temperature:0.2,
+      messages:[{role:'system',content:system},{role:'user',content:user}]})
+  });
+  if(!r.ok) throw new Error(await errText(r));
+  const j=await r.json();
+  return (j.choices&&j.choices[0]&&j.choices[0].message.content||'').trim();
+}
+const AI_TASKS={
+  clean:{ title:'✨ Aufgeräumt',
+    sys:'Du räumst Diktate auf. Entferne Füllwörter, Versprecher und Wortwiederholungen. Setze korrekte Zeichensetzung und sinnvolle Absätze. Behalte Sprache, Inhalt und Tonfall exakt bei — auch bei gemischtem Deutsch/Englisch. Gib ausschließlich den bereinigten Text zurück.' },
+  summary:{ title:'🧠 Zusammenfassung',
+    sys:'Fasse das Diktat auf Deutsch zusammen. Format: erst ein Absatz "Kurzfassung", dann "Stichpunkte" als Liste, dann "To-dos" als Liste (nur echte Aufgaben; wenn keine, schreibe "keine"). Keine Einleitung.' },
+  de:{ title:'🇩🇪 Auf Deutsch', sys:'Übersetze den Text vollständig ins Deutsche. Gib nur die Übersetzung zurück.' },
+  en:{ title:'🇬🇧 In English', sys:'Translate the text completely into English. Return only the translation.' },
+  bullets:{ title:'📌 Notiz-Form',
+    sys:'Wandle das Diktat in kompakte Notizen um: Überschrift, dann kurze Stichpunkte. Sprache des Originals beibehalten.' },
+  mail:{ title:'✉️ E-Mail-Entwurf',
+    sys:'Formuliere aus dem Diktat eine höfliche, klare E-Mail mit Betreffzeile. Sprache des Originals beibehalten.' }
+};
+async function runAI(key){
+  if(!hasKey()){ openSheet('#sheetSettings'); return toast('Dafür brauchst du einen API-Key'); }
+  const text=segsText(activeSegs());
+  if(!text) return toast('Kein Text vorhanden');
+  const task=AI_TASKS[key];
+  $('#aiCard').style.display=''; $('#aiTitle').textContent=task.title;
+  $('#aiOut').textContent='… wird erstellt';
+  try{
+    const out=await chat(task.sys,text);
+    $('#aiOut').textContent=out; session.ai=out; persist();
+  }catch(e){ $('#aiOut').textContent='Fehler: '+e.message; }
+}
+
+/* ============================ 10 · Archiv ============================ */
+async function openArchive(){
+  openSheet('#sheetArchive');
+  await renderArchive();
+}
+async function renderArchive(){
+  const q=$('#archSearch').value.trim().toLowerCase();
+  let items=await DB.all('sessions');
+  items.sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0)||b.createdAt-a.createdAt);
+  const all=items.length;
+  if(q) items=items.filter(it=>((it.title||'')+' '+segsText(it.pro&&it.view==='pro'?it.pro:it.segments)).toLowerCase().includes(q));
+  const bytes=all? (await DB.all('audio')).reduce((a,x)=>a+(x.blob?x.blob.size:0),0) : 0;
+  $('#archInfo').textContent = all+' Aufnahme'+(all===1?'':'n')+(q?' · '+items.length+' Treffer':'')+' · '+fmtBytes(bytes)+' Audio';
+  const list=$('#archList');
+  if(!items.length){ list.innerHTML='<div class="empty"><span class="big">📭</span>'+(q?'Nichts gefunden':'Noch keine Aufnahmen')+'</div>'; return; }
+  list.innerHTML='';
+  items.forEach(it=>{
+    const segs=(it.view==='pro'&&it.pro)?it.pro:it.segments;
+    const text=segsText(segs).replace(/\s+/g,' ');
+    const el=document.createElement('div'); el.className='item';
+    let snip=esc(text.slice(0,190));
+    if(q){
+      const i=text.toLowerCase().indexOf(q);
+      if(i>=0){ const from=Math.max(0,i-60); snip=esc(text.slice(from,from+190)).replace(new RegExp(esc(q).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'ig'),m=>'<mark>'+m+'</mark>'); }
+    }
+    el.innerHTML=
+      '<div class="body">'+
+        '<div class="ttl">'+(it.pinned?'📌 ':'')+esc(it.title||'Ohne Titel')+'</div>'+
+        '<div class="sub">'+fmtDate(it.createdAt)+' · '+fmtTime(it.durationMs/1000)+' · '+
+          (it.wordCount||countWords(text))+' W · '+({de:'DE',en:'EN',mix:'DE+EN'}[it.lang]||it.lang)+
+          (it.pro?' · <span class="badge pro">PRO</span>':'')+'</div>'+
+        '<div class="snip">'+snip+'</div>'+
+      '</div>'+
+      '<button class="iconbtn" data-more>⋯</button>';
+    el.querySelector('.body').onclick=()=>loadSession(it.id);
+    el.querySelector('[data-more]').onclick=e=>{
+      e.stopPropagation();
+      popMenu(e.currentTarget,[
+        {icon:'📂',label:'Öffnen',act:()=>loadSession(it.id)},
+        {icon:'✏️',label:'Umbenennen',act:async()=>{
+          const t=prompt('Neuer Titel',it.title||''); if(t===null) return;
+          it.title=t.trim(); await DB.put('sessions',it);
+          if(session&&session.id===it.id){ session.title=it.title; setTitle(it.title); }
+          renderArchive();
+        }},
+        {icon:it.pinned?'📍':'📌',label:it.pinned?'Lösen':'Anheften',act:async()=>{ it.pinned=!it.pinned; await DB.put('sessions',it); renderArchive(); }},
+        {icon:'📄',label:'Als Text speichern',act:()=>download((it.title||'transkript').slice(0,40)+'.txt',segsText(segs))},
+        '-',
+        {icon:'🗑️',label:'Löschen',act:async()=>{
+          if(!confirm('„'+(it.title||'Ohne Titel')+'" löschen?')) return;
+          await DB.del('sessions',it.id); await DB.del('audio',it.id);
+          if(session&&session.id===it.id) newSession();
+          renderArchive();
+        }}
+      ]);
+    };
+    list.appendChild(el);
+  });
+}
+async function loadSession(id){
+  const rec=await DB.get('sessions',id); if(!rec) return;
+  stopEngine();
+  session=Object.assign({marks:[],speaker:'A',view:'live'},rec);
+  session.segments=session.segments||[];
+  state=ST.DONE; recStart=0;
+  const a=await DB.get('audio',id);
+  audioURL&&URL.revokeObjectURL(audioURL);
+  audioBlob = a&&a.blob || null;
+  if(audioBlob){ audioURL=URL.createObjectURL(audioBlob); player.src=audioURL; $('#playCard').style.display=''; }
+  else { player.removeAttribute('src'); $('#playCard').style.display='none'; }
+  $('#aiCard').style.display = session.ai?'':'none';
+  if(session.ai){ $('#aiTitle').textContent='🤖 KI-Ergebnis'; $('#aiOut').textContent=session.ai; }
+  setTitle(session.title||'Aufnahme');
+  S.lang=session.lang||S.lang; saveSettings(); syncLangUI();
+  updateTimer(session.durationMs/1000);
+  render(); updateStats(); syncUI();
+  closeSheet($('#sheetArchive'));
+}
+
+async function backupAll(){
+  const sess=await DB.all('sessions');
+  download('voicenotes_backup_'+new Date().toISOString().slice(0,10)+'.json',
+    JSON.stringify({app:'voicenotes',version:1,exportedAt:Date.now(),settings:Object.assign({},S,{apiKey:''}),sessions:sess},null,2),
+    'application/json');
+  toast(sess.length+' Aufnahmen gesichert (ohne Audio)');
+}
+async function restoreBackup(file){
+  try{
+    const data=JSON.parse(await file.text());
+    if(!data.sessions) throw new Error('Kein gültiges Backup');
+    let n=0;
+    for(const s of data.sessions){ if(!s.id) s.id=uid(); await DB.put('sessions',s); n++; }
+    toast(n+' Aufnahmen importiert'); renderArchive();
+  }catch(e){ toast('Import fehlgeschlagen: '+e.message); }
+}
+
+/* ============================ 11 · Statistik ============================ */
+const STOP=new Set([...DE_WORDS,...EN_WORDS,'ja','ok','okay','so','dann','mal','noch','sehr']);
+function openStats(){
+  const segs=activeSegs(), text=segsText(segs);
+  const words=(text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)||[]);
+  const dur=(session.durationMs/1000)||elapsed();
+  const freq={}; words.forEach(w=>{ if(w.length>3&&!STOP.has(w)) freq[w]=(freq[w]||0)+1; });
+  const top=Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,14);
+  const de=segs.filter(s=>s.lang==='de').length, en=segs.filter(s=>s.lang==='en').length;
+  const conf=segs.filter(s=>s.conf).map(s=>s.conf);
+  const avg=conf.length? Math.round(conf.reduce((a,b)=>a+b,0)/conf.length*100) : null;
+  $('#statsBody').innerHTML=
+    '<div class="row" style="gap:14px;margin-bottom:14px">'+
+      stat('Dauer',fmtTime(dur))+stat('Wörter',words.length)+
+      stat('W/min',dur>3?Math.round(words.length/(dur/60)):'–')+
+      stat('Sätze',(text.match(/[.!?…]/g)||[]).length)+
+      stat('Segmente',segs.length)+stat('Marken',session.marks.length)+
+    '</div>'+
+    '<div class="muted">Sprachverteilung: <b>'+de+'</b> deutsche, <b>'+en+'</b> englische Segmente'+
+      (avg!==null?' · Ø Erkennungssicherheit <b>'+avg+'%</b>':'')+'</div>'+
+    (session.pro?'<div class="muted" style="margin-top:6px">Pro-Transkript vorhanden ('+ (session.proMeta&&session.proMeta.model||'') +')</div>':'')+
+    '<h3 style="margin-top:16px;font-size:13px;color:var(--fg2);text-transform:uppercase;letter-spacing:.7px">Häufigste Wörter</h3>'+
+    (top.length?'<div class="chips">'+top.map(([w,c])=>'<span class="chip">'+esc(w)+' <b>'+c+'</b></span>').join('')+'</div>'
+               :'<div class="tiny">Noch zu wenig Text.</div>')+
+    (session.marks.length?'<h3 style="margin-top:16px;font-size:13px;color:var(--fg2);text-transform:uppercase;letter-spacing:.7px">Marken</h3><div class="chips">'+
+      session.marks.map(m=>'<button class="chip" data-mark="'+m+'">🔖 '+fmtTime(m)+'</button>').join('')+'</div>':'');
+  $$('#statsBody [data-mark]').forEach(b=>b.onclick=()=>{ seekTo(+b.dataset.mark); closeSheet($('#sheetStats')); });
+  openSheet('#sheetStats');
+}
+const stat=(l,v)=>'<div class="stat"><b style="font-size:20px">'+v+'</b>'+l+'</div>';
+
+/* ============================ 12 · Bedienung & Start ============================ */
+function syncLangUI(){
+  $$('.lang').forEach(b=>b.classList.toggle('active',b.dataset.lang===S.lang));
+  $('#langHint').textContent={
+    de:'Erkennt Deutsch. Umschalten geht auch während der Aufnahme.',
+    en:'Recognises English. You can switch while recording.',
+    mix:'Zwei Erkenner laufen parallel — pro Satz gewinnt die besser passende Sprache. Ideal für deutsche Sätze mit englischen Fachwörtern.'
+  }[S.lang];
+}
+function syncUI(){
+  const rec=state===ST.REC, pau=state===ST.PAUSE, active=rec||pau;
+  $('#btnMic').textContent= active?'⏹':'🎙️';
+  $('#btnMic').classList.toggle('rec',active);
+  $('#btnMic').title= active?'Aufnahme beenden':'Aufnahme starten';
+  $('#btnPause').textContent= pau?'▶︎':'⏸';
+  $('#btnPause').disabled=!active;
+  $('#btnMark').disabled=!active;
+  $('#btnSpeaker').disabled=!active;
+  $('#btnSpeaker').classList.toggle('on', session&&session.speaker==='B');
+  $('#lamp').classList.toggle('live',rec);
+  const hasPro=!!(session&&session.pro);
+  $('#btnView').style.display=hasPro?'':'none';
+  $('#btnView').textContent= session&&session.view==='pro'?'Pro':'Live';
+  $('#btnPro').classList.toggle('hidden',!audioBlob);
+}
+
+/* Sprachwahl */
+$$('.lang').forEach(b=>b.onclick=()=>{
+  S.lang=b.dataset.lang; saveSettings(); syncLangUI();
+  if(session) session.lang=S.lang;
+  if(state===ST.REC){ startEngine(); toast('Sprache: '+b.textContent.split('\n')[0]); }
+});
+
+/* Aufnahmeleiste */
+$('#btnMic').onclick=()=>{ (state===ST.REC||state===ST.PAUSE)? stopRecording() : startRecording(); };
+$('#btnPause').onclick=()=>{ state===ST.REC? pauseRecording() : resumeRecording(); };
+$('#btnMark').onclick=()=>{
+  const t=+elapsed().toFixed(2); session.marks.push(t);
+  const last=session.segments[session.segments.length-1]; if(last) last.marked=true;
+  render(); updateStats(); toast('Marke bei '+fmtTime(t));
+};
+$('#btnSpeaker').onclick=()=>{
+  session.speaker= session.speaker==='B'?'A':'B';
+  const last=session.segments[session.segments.length-1]; if(last) last.para=true;
+  syncUI(); toast('Sprecher '+session.speaker);
+};
+$('#btnSearchTop').onclick=()=>{ openArchive(); setTimeout(()=>$('#archSearch').focus(),120); };
+
+/* Transkript-Werkzeuge */
+$('#btnView').onclick=()=>{
+  if(!session.pro) return;
+  session.view= session.view==='pro'?'live':'pro';
+  render(); updateStats(); syncUI(); persist();
+};
+$('#btnPro').onclick=runPro;
+$('#btnAI').onclick=e=>popMenu(e.currentTarget,[
+  {icon:'✨',label:'Text aufräumen',act:()=>runAI('clean')},
+  {icon:'🧠',label:'Zusammenfassung + To-dos',act:()=>runAI('summary')},
+  {icon:'📌',label:'In Notizen umwandeln',act:()=>runAI('bullets')},
+  {icon:'✉️',label:'E-Mail daraus machen',act:()=>runAI('mail')},
+  '-',
+  {icon:'🇩🇪',label:'Ins Deutsche übersetzen',act:()=>runAI('de')},
+  {icon:'🇬🇧',label:'Translate to English',act:()=>runAI('en')}
+]);
+$('#btnExport').onclick=e=>exportMenu(e.currentTarget);
+$('#btnCopy').onclick=()=>copyText(segsText(activeSegs())||'');
+$('#btnShare').onclick=shareText;
+$('#btnNew').onclick=()=>{
+  if(session.segments.length&&!confirm('Neue Aufnahme beginnen? Die aktuelle bleibt im Archiv.')) return;
+  if(state===ST.REC||state===ST.PAUSE) stopRecording();
+  newSession(); syncUI();
+};
+$('#btnAiCopy').onclick=()=>copyText($('#aiOut').textContent);
+$('#btnAiClose').onclick=()=>$('#aiCard').style.display='none';
+$('#btnAiApply').onclick=()=>{
+  const t=$('#aiOut').textContent.trim(); if(!t) return;
+  const dur=session.durationMs/1000||60;
+  session.pro=splitToSegments(t,0,dur); session.view='pro';
+  render(); updateStats(); syncUI(); persist(); toast('Übernommen');
+};
+
+/* Kopfzeile */
+$('#btnArchive').onclick=openArchive;
+$('#btnStats').onclick=openStats;
+$('#btnTheme').onclick=()=>{
+  S.theme={auto:'dark',dark:'light',light:'auto'}[S.theme]||'auto';
+  saveSettings(); applyTheme(); if(!waveRAF) drawIdleWave();
+  toast('Design: '+{auto:'automatisch',dark:'dunkel',light:'hell'}[S.theme]);
+};
+$('#btnSettings').onclick=()=>{ fillSettings(); openSheet('#sheetSettings'); };
+
+/* Archiv-Sheet */
+$('#archSearch').oninput=()=>renderArchive();
+$('#btnBackup').onclick=backupAll;
+$('#btnRestore').onclick=()=>$('#importFile').click();
+$('#importFile').onchange=e=>{ e.target.files[0]&&restoreBackup(e.target.files[0]); e.target.value=''; };
+
+/* Einstellungen */
+function fillSettings(){
+  $$('.toggle[data-set]').forEach(t=>t.classList.toggle('on',!!S[t.dataset.set]));
+  $('#setVocab').value=S.vocab||'';
+  $('#setKey').value=S.apiKey||'';
+  $('#setBase').value=S.baseUrl||defaults.baseUrl;
+  $('#setModel').value=S.model||defaults.model;
+  $('#setChatModel').value=S.chatModel||defaults.chatModel;
+  $('#verInfo').textContent='Voice Notes '+APP_VERSION+' · '+(SR_OK?'Live-Erkennung verfügbar':'Live-Erkennung in diesem Browser nicht verfügbar');
+}
+$$('.toggle[data-set]').forEach(t=>t.onclick=()=>{
+  S[t.dataset.set]=!S[t.dataset.set]; t.classList.toggle('on',S[t.dataset.set]);
+  saveSettings(); render(); updateStats();
+});
+$('#btnKeyShow').onclick=()=>{
+  const i=$('#setKey'); i.type = i.type==='password'?'text':'password';
+};
+$('#btnSaveSettings').onclick=()=>{
+  S.vocab=$('#setVocab').value;
+  S.apiKey=$('#setKey').value.trim();
+  S.baseUrl=$('#setBase').value.trim()||defaults.baseUrl;
+  S.model=$('#setModel').value;
+  S.chatModel=$('#setChatModel').value.trim()||defaults.chatModel;
+  saveSettings(); closeSheet($('#sheetSettings')); syncUI(); toast('Gespeichert');
+};
+$('#btnWipe').onclick=async()=>{
+  if(!confirm('Wirklich ALLE Aufnahmen, Transkripte und Einstellungen in diesem Browser löschen?')) return;
+  await DB.clear('sessions'); await DB.clear('audio');
+  localStorage.removeItem(SETTINGS_KEY);
+  location.reload();
+};
+
+/* Tastenkürzel (Desktop) */
+addEventListener('keydown',e=>{
+  const typing=/^(INPUT|TEXTAREA)$/.test(e.target.tagName)||e.target.isContentEditable;
+  if(e.key==='Escape'){ closeMenu(); $$('.sheet:not(.hidden)').forEach(closeSheet); return; }
+  if(typing) return;
+  if(e.code==='Space'){ e.preventDefault(); $('#btnMic').click(); }
+  else if(e.key==='m'&&!$('#btnMark').disabled) $('#btnMark').click();
+  else if(e.key==='p'&&!$('#btnPause').disabled) $('#btnPause').click();
+  else if(e.key==='e') $('#btnExport').click();
+  else if(e.key==='/'){ e.preventDefault(); $('#btnSearchTop').click(); }
+});
+
+/* Warnung bei fehlender Unterstützung */
+function checkSupport(){
+  const box=$('#warnBox'); const msgs=[];
+  if(!SR_OK) msgs.push('<b>Live-Erkennung nicht verfügbar.</b> Dieser Browser (z. B. Firefox oder ältere iOS-Versionen) kann nicht live mitschreiben. Aufnehmen funktioniert trotzdem — mit hinterlegtem API-Key liefert danach der Pro-Modus das Transkript. Am besten läuft die App in <b>Chrome</b> oder <b>Edge</b>.');
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)
+    msgs.push('<b>Kein Mikrofonzugriff möglich.</b> Die Seite muss über <b>https</b> oder localhost geöffnet werden.');
+  if(!msgs.length) return box.classList.add('hidden');
+  box.innerHTML=msgs.join('<br><br>'); box.classList.remove('hidden');
+}
+
+/* Vor dem Schließen sichern */
+addEventListener('beforeunload',e=>{
+  if(state===ST.REC||state===ST.PAUSE){ e.preventDefault(); e.returnValue=''; }
+});
+
+/* Start */
+const APP_VERSION='1.0';
+applyTheme();
+syncLangUI();
+newSession();
+syncUI();
+drawIdleWave();
+checkSupport();
+if('serviceWorker' in navigator&&location.protocol.startsWith('http'))
+  addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+
+/* Debug-Helfer: Segmente ohne Mikrofon einspeisen (Konsole / Tests) */
+window.VN={
+  get session(){return session;}, S, DB,
+  feed(text,lang='de',conf=.9){ commitSegment({lang,text,conf,tStart:elapsed(),tEnd:elapsed()+1}); },
+  simulate(list){ list.forEach(([t,l,c])=>this.feed(t,l,c||.9)); },
+  srt:()=>toSubtitles(false), md:toMarkdown, text:()=>segsText(activeSegs()),
+  tools:{applyCommands,applyVocab,stripFillers,autoPunctuate,langScore,levenshtein,splitToSegments,fmtTime,srtTime},
+  pro:{runPro,prepareAudioParts,sliceToWav,wavBlob,transcribePart,chat,
+       get blob(){return audioBlob;}, set blob(b){audioBlob=b;}}
+};
+
+</script>
+</body>
+</html>

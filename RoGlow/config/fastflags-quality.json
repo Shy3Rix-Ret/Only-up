@@ -1,0 +1,9 @@
+{
+  "FFlagDebugGraphicsPreferD3D11": "True",
+  "FFlagDebugGraphicsPreferD3D11FL10": "False",
+  "FFlagDebugGraphicsPreferVulkan": "False",
+  "DFIntDebugFRMQualityLevelOverride": "21",
+  "FFlagDebugForceFutureIsBrightPhase3": "True",
+  "FIntRenderShadowIntensity": "100",
+  "FIntDebugForceMSAASamples": "4"
+}

@@ -16,3 +16,9 @@ Flappy Bird — aber aus der **Ego-Perspektive des Vogels in 3D**! In der Lobby 
 - 🔊 Sound-Effekte (abschaltbar), Vibration beim Aufprall
 - 🏆 Rekord wird gespeichert, Medaillen beim Game Over
 - 📱 Für Handys optimiert: reines Canvas-2D-Rendering, ~60 FPS, begrenzte Pixeldichte, Objekt-Recycling — kein Lag
+
+---
+
+## Weitere Inhalte in diesem Repo
+
+- **[`RoGlow/`](RoGlow/)** — ReShade-Installer und Shader-Presets für den Roblox-Windows-Client (PowerShell). Siehe [`RoGlow/README.md`](RoGlow/README.md).

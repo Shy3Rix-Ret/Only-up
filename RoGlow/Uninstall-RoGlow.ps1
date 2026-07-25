@@ -222,9 +222,12 @@ function Main {
     Write-Host '  RoGlow deinstallieren' -ForegroundColor White
     Write-Host '  ---------------------------------------------------------------' -ForegroundColor DarkGray
 
-    $running = @(Get-Process -Name 'RobloxPlayerBeta' -ErrorAction SilentlyContinue)
-    if ($running.Count -gt 0) {
-        throw 'Roblox laeuft gerade - dxgi.dll ist gesperrt. Bitte Roblox schliessen.'
+    # Player und Studio koennen beide eine dxgi.dll gesperrt halten.
+    foreach ($procName in @('RobloxPlayerBeta', 'RobloxStudioBeta')) {
+        $running = @(Get-Process -Name $procName -ErrorAction SilentlyContinue)
+        if ($running.Count -gt 0) {
+            throw "$procName laeuft gerade - dxgi.dll ist gesperrt. Bitte schliessen."
+        }
     }
 
     $targets = @(Get-InstallTargets)

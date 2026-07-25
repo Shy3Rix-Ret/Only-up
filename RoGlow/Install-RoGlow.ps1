@@ -19,9 +19,21 @@
     ReShade-Overlay im Roblox *Player*. Die dxgi.dll wird geladen, aber Menue
     und Effekte werden geblockt. Es gibt bis heute keine Whitelist. Dieses
     Script umgeht Hyperion NICHT und versucht es auch nicht - es installiert
-    ReShade auf dem normalen, dokumentierten Weg. Ob etwas sichtbar wird,
-    entscheidet allein Roblox.
-    Fuer einen Weg, der heute funktioniert, siehe Apply-FastFlags.ps1.
+    ReShade auf dem normalen, dokumentierten Weg.
+
+    ROBLOX STUDIO IST DAVON NICHT BETROFFEN.
+    Studio ist ein Entwicklerwerkzeug und traegt keine Hyperion-Schicht. Dort
+    laeuft ReShade vollstaendig: Menue, Bloom, Reflexionen, Ambient Occlusion,
+    das komplette Preset. Wer die Effekte tatsaechlich sehen will, nimmt
+    -Target Studio. Studio gibt es kostenlos auf create.roblox.com und es
+    oeffnet jedes Erlebnis, das man auch spielen kann.
+
+    Fuer bessere Player-Grafik ohne Injection siehe Apply-FastFlags.ps1.
+
+.PARAMETER Target
+    Player | Studio | Both. Default: Both.
+    Studio ist das Ziel, bei dem die Effekte sichtbar werden. Player wird
+    korrekt, aber mit sehr hoher Wahrscheinlichkeit wirkungslos installiert.
 
 .PARAMETER Preset
     Performance | Balanced | Quality. Default: Balanced.
@@ -30,11 +42,12 @@
     Taste zum Ein-/Ausschalten aller Effekte im Spiel. Default: F8.
 
 .PARAMETER RobloxPath
-    Manueller Pfad zu RobloxPlayerBeta.exe oder zum version-* Ordner.
-    Ueberspringt die automatische Erkennung.
+    Manueller Pfad zu RobloxPlayerBeta.exe, RobloxStudioBeta.exe oder zum
+    version-* Ordner. Ueberspringt die automatische Erkennung.
 
 .PARAMETER AllVersions
-    Installiert in alle gefundenen version-* Ordner statt nur in den neuesten.
+    Installiert in alle gefundenen version-* Ordner statt nur in den neuesten
+    je Anwendung.
 
 .PARAMETER Repair
     Installiert erneut aus dem lokalen Cache, ohne Netzwerkzugriff.
@@ -68,6 +81,12 @@
 #>
 [CmdletBinding()]
 param(
+    # Studio laeuft ohne Hyperion - dort werden die Effekte tatsaechlich
+    # sichtbar. Beim Player ist die Installation korrekt, aber das Overlay
+    # wird sehr wahrscheinlich unterdrueckt.
+    [ValidateSet('Player', 'Studio', 'Both')]
+    [string] $Target = 'Both',
+
     [ValidateSet('Performance', 'Balanced', 'Quality')]
     [string] $Preset = 'Balanced',
 
@@ -132,6 +151,14 @@ $Script:VirtualKeys = @{
 # Bootstrapper, die statt Roblox selbst im Protocol-Handler stehen koennen
 $Script:BootstrapperNames = @('Bloxstrap', 'Fishstrap', 'Voidstrap', 'Lexstrap')
 
+# Die beiden Roblox-Anwendungen. Beide nutzen DirectX 11 ueber DXGI, beide
+# bekommen also dieselbe dxgi.dll und dasselbe Preset. Der Unterschied liegt
+# ausschliesslich in Hyperion: das schuetzt den Player, nicht Studio.
+$Script:ExeNames = [ordered]@{
+    Player = 'RobloxPlayerBeta.exe'
+    Studio = 'RobloxStudioBeta.exe'
+}
+
 # ---------------------------------------------------------------------------
 # Ausgabe
 # ---------------------------------------------------------------------------
@@ -169,13 +196,34 @@ function Get-RegistryValue {
     } catch { return $null }
 }
 
+function Get-RobloxRoots {
+    <# Alle Ordner, unter denen version-* Verzeichnisse liegen koennen. #>
+    $roots = @(
+        (Join-Path $env:LOCALAPPDATA 'Roblox\Versions'),
+        (Join-Path $env:LOCALAPPDATA 'Bloxstrap\Versions'),
+        (Join-Path $env:LOCALAPPDATA 'Fishstrap\Versions')
+    )
+    if ($env:ProgramFiles)        { $roots += (Join-Path $env:ProgramFiles 'Roblox\Versions') }
+    if (${env:ProgramFiles(x86)}) { $roots += (Join-Path ${env:ProgramFiles(x86)} 'Roblox\Versions') }
+    return $roots
+}
+
 function New-RobloxCandidate {
     param([string] $ExePath, [string] $Source)
 
     if ([string]::IsNullOrWhiteSpace($ExePath)) { return $null }
     try { $ExePath = [System.IO.Path]::GetFullPath($ExePath) } catch { return $null }
     if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { return $null }
-    if ([System.IO.Path]::GetFileName($ExePath) -ne 'RobloxPlayerBeta.exe') { return $null }
+
+    # Player und Studio liegen beide unter Versions\version-<hex>, aber in
+    # jeweils eigenen Ordnern - eine Kollision der Installationen gibt es also
+    # nicht.
+    $leaf = [System.IO.Path]::GetFileName($ExePath)
+    $kind = $null
+    foreach ($k in $Script:ExeNames.Keys) {
+        if ($leaf -eq $Script:ExeNames[$k]) { $kind = $k; break }
+    }
+    if (-not $kind) { return $null }
 
     # Microsoft-Store-/UWP-Installation: WindowsApps ist schreibgeschuetzt und
     # signaturgepruefft - dort kann und soll nichts abgelegt werden.
@@ -188,15 +236,16 @@ function New-RobloxCandidate {
     [pscustomobject]@{
         Exe      = $ExePath
         Dir      = $dir
+        Kind     = $kind
         Version  = Split-Path -Leaf $dir
         Source   = $Source
         Modified = (Get-Item -LiteralPath $ExePath).LastWriteTimeUtc
     }
 }
 
-function Resolve-RobloxPlayer {
+function Resolve-RobloxTargets {
     <#
-      Reihenfolge nach Verlaesslichkeit:
+      Findet Player UND Studio. Reihenfolge nach Verlaesslichkeit:
         1. laufender Prozess  - kann gar nicht falsch sein
         2. Registry           - der von Roblox selbst gepflegte Zeiger
         3. Dateisystem-Scan   - Fallback, deckt auch Mehrfachversionen ab
@@ -211,61 +260,60 @@ function Resolve-RobloxPlayer {
         if ($seen.Add($c.Exe.ToLowerInvariant())) { $candidates.Add($c) }
     }
 
-    # 1. laufender Prozess
-    try {
-        foreach ($p in @(Get-Process -Name 'RobloxPlayerBeta' -ErrorAction SilentlyContinue)) {
-            if ($p.Path) { Add-Candidate $p.Path 'laufender Prozess' }
-        }
-    } catch { }
-
-    # 2a. Roblox' eigener Environment-Key
-    $clientExe = Get-RegistryValue 'HKCU:\Software\ROBLOX Corporation\Environments\roblox-player' 'clientExe'
-    if ($clientExe) { Add-Candidate $clientExe 'Registry (Environments)' }
-
-    # 2b. Protocol-Handler roblox-player://
-    $cmdKeys = @(
-        'HKCU:\Software\Classes\roblox-player\shell\open\command',
-        'HKLM:\Software\Classes\roblox-player\shell\open\command'
-    )
-    foreach ($key in $cmdKeys) {
-        $cmd = Get-RegistryValue $key '(default)'
-        if (-not $cmd) { continue }
-        $exe = Get-QuotedExePath $cmd
-        if (-not $exe) { continue }
-
-        $leaf = [System.IO.Path]::GetFileNameWithoutExtension($exe)
-        if ($Script:BootstrapperNames -contains $leaf) {
-            # Bloxstrap & Co. haengen sich in den Protocol-Handler. Sie starten
-            # aber weiterhin die normale RobloxPlayerBeta.exe - der Dateiscan
-            # unten findet sie.
-            Write-Info "Bootstrapper erkannt ($leaf) - Protocol-Handler zeigt nicht direkt auf Roblox."
-            continue
-        }
-        Add-Candidate $exe 'Registry (Protocol-Handler)'
+    # 1. laufende Prozesse
+    foreach ($procName in @('RobloxPlayerBeta', 'RobloxStudioBeta')) {
+        try {
+            foreach ($p in @(Get-Process -Name $procName -ErrorAction SilentlyContinue)) {
+                if ($p.Path) { Add-Candidate $p.Path 'laufender Prozess' }
+            }
+        } catch { }
     }
 
-    # 2c. Uninstall-Eintrag
-    foreach ($u in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Roblox',
-                     'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\RobloxPlayer')) {
-        $loc = Get-RegistryValue $u 'InstallLocation'
-        if ($loc) { Add-Candidate (Join-Path $loc 'RobloxPlayerBeta.exe') 'Registry (Uninstall)' }
+    # 2a. Roblox' eigene Environment-Keys
+    foreach ($env in @('roblox-player', 'roblox-studio')) {
+        $clientExe = Get-RegistryValue "HKCU:\Software\ROBLOX Corporation\Environments\$env" 'clientExe'
+        if ($clientExe) { Add-Candidate $clientExe 'Registry (Environments)' }
+    }
+
+    # 2b. Protocol-Handler roblox-player:// und roblox-studio://
+    foreach ($scheme in @('roblox-player', 'roblox-studio')) {
+        foreach ($hive in @('HKCU:', 'HKLM:')) {
+            $cmd = Get-RegistryValue "$hive\Software\Classes\$scheme\shell\open\command" '(default)'
+            if (-not $cmd) { continue }
+            $exe = Get-QuotedExePath $cmd
+            if (-not $exe) { continue }
+
+            $leaf = [System.IO.Path]::GetFileNameWithoutExtension($exe)
+            if ($Script:BootstrapperNames -contains $leaf) {
+                # Bloxstrap & Co. haengen sich in den Protocol-Handler. Sie
+                # starten aber weiterhin die normalen Roblox-Exen - der
+                # Dateiscan unten findet sie.
+                Write-Info "Bootstrapper erkannt ($leaf) - Protocol-Handler zeigt nicht direkt auf Roblox."
+                continue
+            }
+            Add-Candidate $exe 'Registry (Protocol-Handler)'
+        }
+    }
+
+    # 2c. Uninstall-Eintraege
+    foreach ($u in @('Roblox', 'RobloxPlayer', 'RobloxStudio')) {
+        $loc = Get-RegistryValue "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$u" 'InstallLocation'
+        if (-not $loc) { continue }
+        foreach ($exeName in $Script:ExeNames.Values) {
+            Add-Candidate (Join-Path $loc $exeName) 'Registry (Uninstall)'
+        }
     }
 
     # 3. Dateisystem. Roblox legt bei JEDEM Update einen neuen version-<hex>
     #    Ordner an, der alte bleibt oft noch eine Weile liegen.
-    $roots = @(
-        (Join-Path $env:LOCALAPPDATA 'Roblox\Versions'),
-        (Join-Path $env:LOCALAPPDATA 'Bloxstrap\Versions'),
-        (Join-Path $env:LOCALAPPDATA 'Fishstrap\Versions')
-    )
-    if ($env:ProgramFiles)        { $roots += (Join-Path $env:ProgramFiles 'Roblox\Versions') }
-    if (${env:ProgramFiles(x86)}) { $roots += (Join-Path ${env:ProgramFiles(x86)} 'Roblox\Versions') }
-
-    foreach ($root in $roots) {
+    foreach ($root in (Get-RobloxRoots)) {
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
         try {
-            Get-ChildItem -LiteralPath $root -Directory -Filter 'version-*' -ErrorAction Stop |
-                ForEach-Object { Add-Candidate (Join-Path $_.FullName 'RobloxPlayerBeta.exe') 'Dateisystem' }
+            foreach ($d in (Get-ChildItem -LiteralPath $root -Directory -Filter 'version-*' -ErrorAction Stop)) {
+                foreach ($exeName in $Script:ExeNames.Values) {
+                    Add-Candidate (Join-Path $d.FullName $exeName) 'Dateisystem'
+                }
+            }
         } catch {
             Write-Warn2 "Ordner nicht lesbar: $root"
         }
@@ -396,11 +444,11 @@ function Install-ReShadeRuntime {
       wuerde zwar existieren, aber nie geladen werden.
     #>
     param(
-        [Parameter(Mandatory)][object] $Target,
+        [Parameter(Mandatory)][object] $Candidate,
         [string] $SetupExe
     )
 
-    $dll = Join-Path $Target.Dir 'dxgi.dll'
+    $dll = Join-Path $Candidate.Dir 'dxgi.dll'
     $cachedDll = Join-Path $Script:CacheDir 'dxgi.dll'
 
     if ($Repair) {
@@ -417,7 +465,7 @@ function Install-ReShadeRuntime {
     }
 
     Write-Info 'Starte ReShade-Setup im Headless-Modus ...'
-    $argLine = '"{0}" --api dxgi --headless' -f $Target.Exe
+    $argLine = '"{0}" --api dxgi --headless' -f $Candidate.Exe
     $proc = Start-Process -FilePath $SetupExe -ArgumentList $argLine -Wait -PassThru
 
     if (-not (Test-Path -LiteralPath $dll)) {
@@ -425,7 +473,7 @@ function Install-ReShadeRuntime {
 Das ReShade-Setup hat keine dxgi.dll angelegt (Exit-Code $($proc.ExitCode)).
 Manueller Weg:
   1. $SetupExe doppelklicken
-  2. "Select game" -> $($Target.Exe)
+  2. "Select game" -> $($Candidate.Exe)
   3. Rendering-API "DirectX 10/11/12" waehlen
   4. Danach dieses Script erneut mit -Repair starten
 "@
@@ -471,10 +519,10 @@ function Sync-ShaderCache {
 }
 
 function Install-Shaders {
-    param([Parameter(Mandatory)][object] $Target)
+    param([Parameter(Mandatory)][object] $Candidate)
 
-    $shaderDir  = Join-Path $Target.Dir 'reshade-shaders\Shaders'
-    $textureDir = Join-Path $Target.Dir 'reshade-shaders\Textures'
+    $shaderDir  = Join-Path $Candidate.Dir 'reshade-shaders\Shaders'
+    $textureDir = Join-Path $Candidate.Dir 'reshade-shaders\Textures'
     foreach ($d in @($shaderDir, $textureDir)) {
         if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
     }
@@ -494,7 +542,7 @@ function Install-Shaders {
 }
 
 function Install-Presets {
-    param([Parameter(Mandatory)][object] $Target)
+    param([Parameter(Mandatory)][object] $Candidate)
 
     $presetSrc = Join-Path $Script:ScriptRoot 'presets'
     if (-not (Test-Path -LiteralPath $presetSrc)) {
@@ -503,7 +551,7 @@ function Install-Presets {
 
     $written = New-Object System.Collections.Generic.List[string]
     foreach ($p in (Get-ChildItem -LiteralPath $presetSrc -Filter 'RoGlow-*.ini' -File)) {
-        Copy-Item -LiteralPath $p.FullName -Destination (Join-Path $Target.Dir $p.Name) -Force
+        Copy-Item -LiteralPath $p.FullName -Destination (Join-Path $Candidate.Dir $p.Name) -Force
         $written.Add($p.Name)
     }
     Write-Ok "$($written.Count) Presets kopiert (aktiv: RoGlow-$Preset.ini)."
@@ -511,10 +559,10 @@ function Install-Presets {
 }
 
 function Write-ReShadeIni {
-    param([Parameter(Mandatory)][object] $Target)
+    param([Parameter(Mandatory)][object] $Candidate)
 
     $toggleVk = $Script:VirtualKeys[$ToggleKey.ToUpperInvariant()]
-    $iniPath  = Join-Path $Target.Dir 'ReShade.ini'
+    $iniPath  = Join-Path $Candidate.Dir 'ReShade.ini'
 
     # PerformanceMode=1 backt die Uniform-Werte als Konstanten in die Shader
     # und spart den Uniform-Update-Pfad pro Frame. Kostet nichts optisch, ist
@@ -582,7 +630,7 @@ ForceFullscreen=0
 
 function Write-Manifest {
     param(
-        [Parameter(Mandatory)][object] $Target,
+        [Parameter(Mandatory)][object] $Candidate,
         [Parameter(Mandatory)][string[]] $Files,
         [Parameter(Mandatory)][string] $ReShadeVer
     )
@@ -594,14 +642,15 @@ function Write-Manifest {
         reshadeVersion  = $ReShadeVer
         preset          = $Preset
         toggleKey       = $ToggleKey
-        targetDir       = $Target.Dir
-        robloxVersion   = $Target.Version
-        detectedVia     = $Target.Source
+        targetDir       = $Candidate.Dir
+        application     = $Candidate.Kind
+        robloxVersion   = $Candidate.Version
+        detectedVia     = $Candidate.Source
         files           = @($Files)
         directories     = @('reshade-shaders\Shaders', 'reshade-shaders\Textures', 'reshade-shaders')
     }
 
-    $path = Join-Path $Target.Dir $Script:ManifestName
+    $path = Join-Path $Candidate.Dir $Script:ManifestName
     ($manifest | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $path -Encoding UTF8 -Force
     Write-Ok "Manifest: $Script:ManifestName ($($Files.Count) Dateien protokolliert)"
 
@@ -610,8 +659,8 @@ function Write-Manifest {
     if (Test-Path -LiteralPath $Script:InstallIndex) {
         try { $index = @(Get-Content -LiteralPath $Script:InstallIndex -Raw | ConvertFrom-Json) } catch { $index = @() }
     }
-    $index = @($index | Where-Object { $_ -and $_ -ne $Target.Dir })
-    $index += $Target.Dir
+    $index = @($index | Where-Object { $_ -and $_ -ne $Candidate.Dir })
+    $index += $Candidate.Dir
     ($index | ConvertTo-Json -Depth 3) | Set-Content -LiteralPath $Script:InstallIndex -Encoding UTF8 -Force
 }
 
@@ -625,10 +674,10 @@ function Invoke-CheckLog {
     $any = $false
     foreach ($t in $Targets) {
         $log = Join-Path $t.Dir 'ReShade.log'
-        Write-Step "Log-Pruefung: $($t.Version)"
+        Write-Step "Log-Pruefung: $($t.Kind) / $($t.Version)"
 
         if (-not (Test-Path -LiteralPath $log)) {
-            Write-Warn2 'Keine ReShade.log vorhanden. Starte Roblox einmal und versuche es erneut.'
+            Write-Warn2 "Keine ReShade.log vorhanden. Starte $($t.Kind) einmal und versuche es erneut."
             Write-Info  "Erwartet unter: $log"
             continue
         }
@@ -646,7 +695,7 @@ function Invoke-CheckLog {
             Write-Ok 'ReShade wurde in den Prozess geladen.'
         } else {
             Write-Fail 'Kein Initialisierungseintrag - dxgi.dll wurde offenbar nicht geladen.'
-            Write-Info 'Pruefen: liegt dxgi.dll direkt neben RobloxPlayerBeta.exe im AKTUELLEN version-Ordner?'
+            Write-Info "Pruefen: liegt dxgi.dll direkt neben $([System.IO.Path]::GetFileName($t.Exe)) im AKTUELLEN version-Ordner?"
         }
 
         Write-Info "Erfolgreich kompilierte Effekte: $($effects.Count)"
@@ -657,9 +706,15 @@ function Invoke-CheckLog {
 
         if ($loaded.Count -gt 0 -and $effects.Count -gt 0) {
             Write-Host ''
-            Write-Warn2 'ReShade laedt und kompiliert - wenn im Spiel trotzdem nichts sichtbar ist,'
-            Write-Warn2 'ist das das erwartete Hyperion-Verhalten und kein Fehler dieses Tools.'
-            Write-Info  'Siehe Apply-FastFlags.ps1 fuer den Weg ohne Injection.'
+            if ($t.Kind -eq 'Studio') {
+                Write-Ok 'ReShade laedt und kompiliert. In Studio muessen die Effekte sichtbar sein -'
+                Write-Ok 'wenn nicht, pruefe den Toggle-Hotkey und den Depth-Buffer (siehe README).'
+            } else {
+                Write-Warn2 'ReShade laedt und kompiliert - wenn im Spiel trotzdem nichts sichtbar ist,'
+                Write-Warn2 'ist das das erwartete Hyperion-Verhalten und kein Fehler dieses Tools.'
+                Write-Info  'Sichtbare Effekte gibt es in Studio: .\Install-RoGlow.ps1 -Target Studio'
+                Write-Info  'Bessere Player-Grafik ohne Injection: .\Apply-FastFlags.ps1'
+            }
         }
     }
     if (-not $any) { Write-Warn2 'Keine einzige ReShade.log gefunden.' }
@@ -670,10 +725,20 @@ function Invoke-CheckLog {
 # ---------------------------------------------------------------------------
 
 function Confirm-Risk {
+    param([object[]] $Targets)
+
+    # Nur der Player steht unter Hyperion. Wird ausschliesslich nach Studio
+    # installiert, gibt es nichts zu warnen - dort ist ReShade ein normales
+    # Grafik-Overlay ueber einem Entwicklerwerkzeug.
+    $hasPlayer = @($Targets | Where-Object { $_.Kind -eq 'Player' }).Count -gt 0
+    if (-not $hasPlayer) {
+        Write-Info 'Nur Studio-Ziele - kein Hyperion, keine Rueckfrage noetig.'
+        return
+    }
     if ($Yes) { return }
 
     Write-Host ''
-    Write-Host '  ACHTUNG - bitte lesen' -ForegroundColor Yellow
+    Write-Host '  ACHTUNG - betrifft die Player-Installation' -ForegroundColor Yellow
     Write-Host '  -------------------------------------------------------------' -ForegroundColor DarkGray
     Write-Host '  Roblox schuetzt den Player mit Hyperion (Byfron). Hyperion' -ForegroundColor Yellow
     Write-Host '  unterdrueckt das ReShade-Overlay seit 2023. Die dxgi.dll wird' -ForegroundColor Yellow
@@ -685,6 +750,8 @@ function Confirm-Risk {
     Write-Host '  seinen Nutzungsbedingungen untersagen kann - das Risiko fuer' -ForegroundColor Yellow
     Write-Host '  deinen Account traegst du.' -ForegroundColor Yellow
     Write-Host ''
+    Write-Host '  In Roblox Studio funktioniert ReShade dagegen vollstaendig:' -ForegroundColor Gray
+    Write-Host '     .\Install-RoGlow.ps1 -Target Studio' -ForegroundColor Gray
     Write-Host '  Alles wieder loswerden:  .\Uninstall-RoGlow.ps1' -ForegroundColor Gray
     Write-Host '  Weg ohne Injection:      .\Apply-FastFlags.ps1' -ForegroundColor Gray
     Write-Host ''
@@ -705,50 +772,78 @@ function Main {
     }
 
     # --- Ziel bestimmen ---
-    Write-Step 'Suche Roblox ...'
+    $wantedKinds = if ($Target -eq 'Both') { @('Player', 'Studio') } else { @($Target) }
+
+    Write-Step "Suche Roblox ($($wantedKinds -join ' + ')) ..."
     if ($RobloxPath) {
-        $exe = $RobloxPath
+        # Bei einem Ordner beide Exen probieren - der Nutzer weiss meist selbst
+        # nicht, ob in dem version-* Ordner Player oder Studio liegt.
+        $c = $null
         if (Test-Path -LiteralPath $RobloxPath -PathType Container) {
-            $exe = Join-Path $RobloxPath 'RobloxPlayerBeta.exe'
+            foreach ($exeName in $Script:ExeNames.Values) {
+                $c = New-RobloxCandidate -ExePath (Join-Path $RobloxPath $exeName) -Source 'manuell (-RobloxPath)'
+                if ($null -ne $c) { break }
+            }
+        } else {
+            $c = New-RobloxCandidate -ExePath $RobloxPath -Source 'manuell (-RobloxPath)'
         }
-        $c = New-RobloxCandidate -ExePath $exe -Source 'manuell (-RobloxPath)'
-        if ($null -eq $c) { throw "Kein gueltiger RobloxPlayerBeta.exe-Pfad: $RobloxPath" }
+        if ($null -eq $c) {
+            throw "In '$RobloxPath' liegt weder RobloxPlayerBeta.exe noch RobloxStudioBeta.exe."
+        }
         $targets = @($c)
+        Write-Ok "$($c.Kind): $($c.Version)"
     } else {
         # @() erzwingen: bei genau einem Treffer wuerde PowerShell das Array
         # sonst zu einem Einzelobjekt aufloesen und .Count schlaegt fehl.
-        $all = @(Resolve-RobloxPlayer)
+        $all = @(Resolve-RobloxTargets | Where-Object { $wantedKinds -contains $_.Kind })
         if ($all.Count -eq 0) {
             throw @"
-Roblox wurde nicht gefunden.
+Roblox ($($wantedKinds -join ' / ')) wurde nicht gefunden.
 Gesucht wurde in Registry (Environments, Protocol-Handler, Uninstall) und unter:
   %LOCALAPPDATA%\Roblox\Versions\version-*
   %ProgramFiles%\Roblox\Versions\version-*
-Starte Roblox einmal, damit es sich installiert, oder gib den Pfad direkt an:
+Starte die Anwendung einmal, damit sie sich installiert, oder gib den Pfad an:
   .\Install-RoGlow.ps1 -RobloxPath "C:\...\version-xxxx"
+Roblox Studio gibt es kostenlos unter https://create.roblox.com/
 "@
         }
-        foreach ($c in $all) { Write-Info ("{0}  [{1}]" -f $c.Version, $c.Source) }
+        foreach ($c in $all) { Write-Info ("{0,-7} {1}  [{2}]" -f $c.Kind, $c.Version, $c.Source) }
+
         if ($AllVersions) {
             $targets = $all
-            Write-Ok "$($all.Count) Version(en) gefunden - installiere in alle."
+            Write-Ok "$($all.Count) Installation(en) gefunden - installiere in alle."
         } else {
-            $targets = @($all[0])
-            Write-Ok "Neueste Version: $($all[0].Version)  (Erkennung: $($all[0].Source))"
-            if ($all.Count -gt 1) { Write-Info "$($all.Count - 1) weitere Version(en) vorhanden - mit -AllVersions einbeziehen." }
+            # Pro Anwendung die neueste Version, nicht global die neueste -
+            # sonst faellt bei -Target Both eine der beiden hinten runter.
+            $picked = New-Object System.Collections.Generic.List[object]
+            foreach ($kind in $wantedKinds) {
+                $newest = @($all | Where-Object { $_.Kind -eq $kind }) | Select-Object -First 1
+                if ($newest) {
+                    $picked.Add($newest)
+                    Write-Ok "$kind`: $($newest.Version)  (Erkennung: $($newest.Source))"
+                } else {
+                    Write-Warn2 "$kind nicht gefunden - wird uebersprungen."
+                }
+            }
+            $targets = @($picked)
+            $skipped = $all.Count - $targets.Count
+            if ($skipped -gt 0) { Write-Info "$skipped aeltere Version(en) vorhanden - mit -AllVersions einbeziehen." }
         }
     }
 
     # --- Nur Log pruefen? ---
     if ($CheckLog) { Invoke-CheckLog -Targets $targets; return }
 
-    # --- Laeuft Roblox? ---
-    $running = @(Get-Process -Name 'RobloxPlayerBeta' -ErrorAction SilentlyContinue)
-    if ($running.Count -gt 0 -and -not $Force) {
-        throw 'Roblox laeuft gerade - dxgi.dll waere gesperrt. Bitte Roblox schliessen (oder -Force).'
+    # --- Laeuft eine der Anwendungen? ---
+    foreach ($t in $targets) {
+        $procName = [System.IO.Path]::GetFileNameWithoutExtension($t.Exe)
+        $running = @(Get-Process -Name $procName -ErrorAction SilentlyContinue)
+        if ($running.Count -gt 0 -and -not $Force) {
+            throw "$($t.Kind) laeuft gerade - dxgi.dll waere gesperrt. Bitte schliessen (oder -Force)."
+        }
     }
 
-    Confirm-Risk
+    Confirm-Risk -Targets $targets
 
     # --- ReShade holen ---
     $reshadeVer = $null
@@ -770,37 +865,54 @@ Starte Roblox einmal, damit es sich installiert, oder gib den Pfad direkt an:
     # --- Pro Ziel installieren ---
     foreach ($t in $targets) {
         Write-Host ''
-        Write-Step "Installiere nach $($t.Version)"
+        Write-Step "Installiere nach $($t.Kind) / $($t.Version)"
         Write-Info $t.Dir
 
         $files = New-Object System.Collections.Generic.List[string]
 
-        $files.Add((Install-ReShadeRuntime -Target $t -SetupExe $setup))
+        $files.Add((Install-ReShadeRuntime -Candidate $t -SetupExe $setup))
 
-        foreach ($f in (Install-Shaders -Target $t)) { $files.Add($f) }
-        foreach ($f in (Install-Presets -Target $t)) { $files.Add($f) }
-        $files.Add((Write-ReShadeIni -Target $t))
+        foreach ($f in (Install-Shaders -Candidate $t)) { $files.Add($f) }
+        foreach ($f in (Install-Presets -Candidate $t)) { $files.Add($f) }
+        $files.Add((Write-ReShadeIni -Candidate $t))
 
-        Write-Manifest -Target $t -Files $files.ToArray() -ReShadeVer $reshadeVer
+        Write-Manifest -Candidate $t -Files $files.ToArray() -ReShadeVer $reshadeVer
     }
 
     # --- Abschluss ---
+    $studio = @($targets | Where-Object { $_.Kind -eq 'Studio' })
+    $player = @($targets | Where-Object { $_.Kind -eq 'Player' })
+
     Write-Host ''
     Write-Host '  Fertig.' -ForegroundColor Green
     Write-Host '  ---------------------------------------------------------------' -ForegroundColor DarkGray
-    Write-Host "  Preset       : RoGlow-$Preset" -ForegroundColor White
-    Write-Host "  Effekte an/aus: $ToggleKey" -ForegroundColor White
-    Write-Host '  ReShade-Menue : Pos1 / Home' -ForegroundColor White
-    Write-Host '  Preset wechseln: F6 / F7' -ForegroundColor White
+    Write-Host "  Installiert in  : $($targets.Count) Ziel(e) - $(($targets | ForEach-Object { $_.Kind }) -join ', ')" -ForegroundColor White
+    Write-Host "  Preset          : RoGlow-$Preset" -ForegroundColor White
+    Write-Host "  Effekte an/aus  : $ToggleKey" -ForegroundColor White
+    Write-Host '  ReShade-Menue   : Pos1 / Home' -ForegroundColor White
+    Write-Host '  Preset wechseln : F6 / F7' -ForegroundColor White
     Write-Host '  Shader neu laden: F9' -ForegroundColor White
     Write-Host ''
-    Write-Host '  Naechste Schritte:' -ForegroundColor Gray
-    Write-Host '    1. Roblox starten und ein Spiel betreten' -ForegroundColor Gray
-    Write-Host '    2. .\Install-RoGlow.ps1 -CheckLog    (hat ReShade geladen?)' -ForegroundColor Gray
-    Write-Host '    3. Nach einem Roblox-Update: .\Install-RoGlow.ps1 -Repair' -ForegroundColor Gray
-    Write-Host ''
-    Write-Warn2 'Wenn im Spiel nichts sichtbar wird, ist das der erwartete'
-    Write-Warn2 'Hyperion-Block - nicht ein Fehler der Installation.'
+
+    if ($studio.Count -gt 0) {
+        Write-Host '  STUDIO - hier siehst du die Effekte:' -ForegroundColor Green
+        Write-Host '    1. Roblox Studio starten, ein Erlebnis oeffnen' -ForegroundColor Gray
+        Write-Host '    2. Pos1 druecken -> das ReShade-Menue muss erscheinen' -ForegroundColor Gray
+        Write-Host '    3. F5 fuer den Playtest, damit die Ansicht dem Spiel entspricht' -ForegroundColor Gray
+        Write-Host "    4. $ToggleKey schaltet die Effekte zum Vergleich an und aus" -ForegroundColor Gray
+        Write-Host ''
+    }
+    if ($player.Count -gt 0) {
+        Write-Warn2 'PLAYER - Installation korrekt, Sichtbarkeit unwahrscheinlich.'
+        Write-Warn2 'Hyperion unterdrueckt das Overlay. Mit -CheckLog nachpruefbar.'
+        Write-Info  'Bessere Player-Grafik ohne Injection: .\Apply-FastFlags.ps1'
+        Write-Host ''
+    }
+
+    Write-Host '  Weiteres:' -ForegroundColor Gray
+    Write-Host '    .\Install-RoGlow.ps1 -CheckLog    hat ReShade geladen?' -ForegroundColor Gray
+    Write-Host '    .\Install-RoGlow.ps1 -Repair      nach einem Roblox-Update' -ForegroundColor Gray
+    Write-Host '    .\Uninstall-RoGlow.ps1            alles wieder entfernen' -ForegroundColor Gray
     Write-Host ''
 }
 

@@ -33,8 +33,19 @@ seinen Nutzungsbedingungen untersagen kann. Es sind keine Bannwellen wegen
 ReShade dokumentiert — aber das ist keine Zusage. Das Risiko für deinen
 Account trägst du.
 
-**Was heute funktioniert:** [`Apply-FastFlags.ps1`](#weg-ohne-injection-fastflags)
-— Roblox-eigene Engine-Schalter, keine Injection, kein Anti-Cheat-Konflikt.
+### Was funktioniert
+
+Zwei Wege, beide ohne Anti-Cheat-Konflikt:
+
+| | Was du bekommst | |
+|---|---|---|
+| **Roblox Studio** | Das **komplette Preset**: Bloom, Reflexionen, Ambient Occlusion, Tonemapping, Schärfen. Studio ist ein Entwicklerwerkzeug und trägt keine Hyperion-Schicht. | `.\Install-RoGlow.ps1 -Target Studio` |
+| **Player via FastFlags** | Maximales internes Qualitätslevel, MSAA, mehr Sichtweite. Kein Bloom, keine Reflexionen. | `.\Apply-FastFlags.ps1` |
+
+Wenn du den „glossy" Look tatsächlich sehen willst, ist **Studio** der Weg.
+Es ist kostenlos auf [create.roblox.com](https://create.roblox.com/) und
+öffnet jedes Erlebnis, das man auch spielen kann — mit `F5` startest du
+darin einen normalen Playtest.
 
 ---
 
@@ -62,24 +73,34 @@ eigenes Benutzerprofil geschrieben.
 
 ### Der einfache Weg
 
-Roblox schließen, dann `RoGlow.cmd` doppelklicken.
+Roblox schließen, dann `RoGlow.cmd` doppelklicken. Punkt **1** ist die
+Studio-Installation — die, bei der du etwas siehst.
 
 ### Der Weg über PowerShell
 
 ```powershell
 cd <Ordner mit RoGlow>
-powershell -ExecutionPolicy Bypass -File .\Install-RoGlow.ps1
+powershell -ExecutionPolicy Bypass -File .\Install-RoGlow.ps1 -Target Studio
 ```
+
+`-Target` steuert, wohin installiert wird:
+
+| Wert | Wirkung |
+|---|---|
+| `Studio` | Nur Roblox Studio. Effekte sind sichtbar. Keine Rückfrage, kein Hyperion. |
+| `Player` | Nur der Player. Korrekt installiert, Sichtbarkeit unwahrscheinlich. |
+| `Both` | Beides (Default). Pro Anwendung wird die jeweils neueste Version genommen. |
 
 Nützliche Schalter:
 
 ```powershell
-.\Install-RoGlow.ps1 -Preset Performance      # leichteres Preset
-.\Install-RoGlow.ps1 -ToggleKey F7            # anderer Toggle-Hotkey
-.\Install-RoGlow.ps1 -AllVersions             # in alle version-* Ordner
+.\Install-RoGlow.ps1 -Target Studio -Preset Quality   # Studio + starkes Preset
+.\Install-RoGlow.ps1 -Preset Performance             # leichteres Preset
+.\Install-RoGlow.ps1 -ToggleKey F7                   # anderer Toggle-Hotkey
+.\Install-RoGlow.ps1 -AllVersions                    # in alle version-* Ordner
 .\Install-RoGlow.ps1 -RobloxPath "C:\...\version-abc123"   # Pfad manuell
-.\Install-RoGlow.ps1 -Repair                  # aus Cache, ohne Netzwerk
-.\Install-RoGlow.ps1 -CheckLog                # hat ReShade geladen?
+.\Install-RoGlow.ps1 -Repair                         # aus Cache, ohne Netzwerk
+.\Install-RoGlow.ps1 -CheckLog                       # hat ReShade geladen?
 ```
 
 ### Was dabei passiert
@@ -121,6 +142,38 @@ Nützliche Schalter:
 
 6. **Manifest schreiben** — `roglow-manifest.json` listet jede geschriebene
    Datei. Der Uninstaller entfernt exakt diese und nichts anderes.
+
+---
+
+## Roblox Studio benutzen
+
+Der Ablauf, wenn du die Effekte sehen willst:
+
+1. `.\Install-RoGlow.ps1 -Target Studio`
+2. Roblox Studio starten und ein Erlebnis öffnen
+3. **Pos1 / Home** drücken — das ReShade-Menü muss erscheinen. Tut es das,
+   funktioniert alles.
+4. **F5** startet den Playtest. Jetzt siehst du das Erlebnis wie im Spiel,
+   inklusive Preset.
+5. **F8** schaltet die Effekte an und aus — so vergleichst du direkt.
+
+**Warum Studio funktioniert und der Player nicht:** Hyperion ist die
+Anti-Tamper-Schicht des *Players*. Studio ist Roblox' Entwicklerwerkzeug für
+Creator und trägt diese Schicht nicht. Es ist derselbe Renderer, dieselbe
+DirectX-11-Ausgabe, dasselbe Preset — nur ohne die Sperre. Dieselbe Trennung
+gilt bei den FastFlags: die 18er-Allowlist betrifft den Player, Studio behält
+laut Roblox die vollen Flags.
+
+Drei Dinge, die du wissen solltest:
+
+- **Die Studio-Oberfläche bekommt die Effekte mit ab.** ReShade arbeitet auf
+  dem gesamten Fenster, nicht nur auf dem Viewport. Ribbon, Explorer und
+  Properties leuchten also mit. Für saubere Bilder: `F5` für den Playtest und
+  dann *Ansicht → Vollbild* (oder `F11`).
+- **Studio zeichnet nur bei Bedarf neu.** Steht die Kamera still, bleibt die
+  Bildrate niedrig — das ist Studio, nicht das Preset.
+- **Zum Spielen ist das kein Ersatz.** Du bist im Studio-Playtest, nicht auf
+  einem echten Server mit anderen Spielern.
 
 ---
 
@@ -416,9 +469,14 @@ Erst prüfen, ob überhaupt geladen wurde:
 
 - *Kein Initialisierungseintrag* → die `dxgi.dll` liegt im falschen Ordner.
   Roblox hat vermutlich aktualisiert: `-Repair` ausführen.
-- *Geladen, Effekte kompiliert, im Spiel trotzdem nichts* → das ist der
+- *Geladen, Effekte kompiliert, im **Player** trotzdem nichts* → das ist der
   Hyperion-Block. Kein Fehler der Installation, und von außen nicht zu
-  beheben.
+  beheben. Nimm Studio.
+- *Geladen, Effekte kompiliert, im **Studio** nichts* → hier liegt ein echtes
+  Problem vor. Prüfe, ob Pos1 das Menü öffnet; wenn ja, ist nur der
+  Effekt-Toggle aus (F8). Wenn nein, läuft eine andere Overlay-Software
+  (Discord, GeForce Experience, MSI Afterburner) dazwischen — die einmal
+  beenden und Studio neu starten.
 
 **Ambient Occlusion / SSR / DoF tun nichts, der Rest funktioniert.**
 Dann fehlt der Depth-Buffer. Im ReShade-Menü `DisplayDepth` aktivieren:

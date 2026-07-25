@@ -50,6 +50,19 @@ python3 -m http.server 8000   # dann http://localhost:8000/transcribe/
 
 Umschalten geht auch mitten in der Aufnahme.
 
+## Aufnahme-Modus
+
+| Modus | Wofür |
+|---|---|
+| 🎧 **Audio + Text** | Standard: schneidet mit **und** schreibt live mit. Beste Wahl in Chrome/Edge. |
+| ✍️ **Nur Text** | Live-Mitschrift ohne Audio-Mitschnitt. **Der Modus für iPhone/Safari** — dort blockiert ein offener Mikrofon-Mitschnitt oft die Spracherkennung. |
+| 🔴 **Nur Audio** | Nimmt nur auf, das Transkript kommt danach per ✨ Pro. |
+
+Die Aufnahme wird **immer** gespeichert — auch wenn die Live-Erkennung nichts liefert. In dem
+Fall erklärt die App direkt im Transkript-Feld, was los ist, und bietet Pro-Transkript,
+Nur-Text-Modus und eine **🔬 Diagnose** an (Mikrofon-Test mit Pegel, Browser-Fähigkeiten,
+letzter Erkennungsfehler — zum Kopieren).
+
 ## Funktionen
 
 **Aufnehmen**
@@ -92,9 +105,17 @@ Aufnahme an den eingetragenen Anbieter. Ohne Key wird nichts an einen Anbieter g
 
 ## Browser
 
-Am besten **Chrome oder Edge** (Desktop und Android) — dort funktioniert die Live-Erkennung.
-Firefox und ältere iOS-Versionen können nicht live mitschreiben; die App erkennt das, erklärt es
-und schaltet auf reines Aufnehmen um — mit Key liefert danach der Pro-Modus das Transkript.
+Am besten **Chrome oder Edge** (Desktop und Android) — dort funktioniert die Live-Erkennung
+vollständig.
+
+**iPhone/iPad:** Safari kann zwar live mitschreiben, verweigert das aber meist, solange
+gleichzeitig Audio mitgeschnitten wird. Deshalb: Modus **„✍️ Nur Text"** wählen — dann läuft die
+Live-Mitschrift. Wer den Mitschnitt braucht, nimmt mit „🔴 Nur Audio" auf und lässt danach
+✨ Pro transkribieren (das liefert auf dem iPhone ohnehin die besseren Ergebnisse).
+Die App startet die Erkennung bewusst direkt aus der Tipp-Geste, weil Safari sie sonst blockiert.
+
+**Firefox** kennt keine Spracherkennung; die App erkennt das, erklärt es und schaltet auf reines
+Aufnehmen um — mit Key liefert danach der Pro-Modus das Transkript.
 
 ## Tests
 

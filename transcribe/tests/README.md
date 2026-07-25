@@ -10,7 +10,8 @@ node transcribe/tests/mockapi.mjs    # Terminal 2 — nachgebaute OpenAI-Endpunk
 
 node transcribe/tests/test.mjs         # Oberfläche, Aufnahme, Export, Archiv, PWA
 node transcribe/tests/test-pro.mjs     # Pro-Modus, KI-Funktionen, WAV-Stückelung
-node transcribe/tests/test-engine.mjs  # Live-Erkennung, Mix-Auswahl, Offline, Backup
+node transcribe/tests/test-engine.mjs   # Live-Erkennung, Mix-Auswahl, Offline, Backup
+node transcribe/tests/test-fallback.mjs # stumme Erkennung (iPhone-Fall), Aufnahme-Modi, Diagnose
 ```
 
 `CHROME_PATH` setzen, falls ein bestimmtes Chromium benutzt werden soll.

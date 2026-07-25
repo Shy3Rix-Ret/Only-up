@@ -72,6 +72,12 @@ main{max-width:900px;margin:0 auto;padding:14px 14px 130px}
   border-color:var(--acc);}
 .lang.active small{color:var(--fg)}
 
+.mode{flex:1;padding:8px 4px;border-radius:11px;background:var(--bg3);border:1.5px solid transparent;
+  font-size:12.5px;font-weight:600;transition:.15s;white-space:nowrap}
+.mode.active{border-color:var(--acc);background:color-mix(in srgb,var(--acc) 22%,transparent)}
+.engstat{padding:0 14px 10px;color:var(--fg3);min-height:18px}
+.engstat.bad{color:var(--warn)}
+
 /* ============================ Rekorder ============================ */
 .recwrap{position:relative;border-radius:var(--radius);overflow:hidden;background:var(--bg2);
   border:1px solid var(--line);margin-bottom:12px}
@@ -212,10 +218,20 @@ label.fl{display:block;font-size:13px;color:var(--fg2);margin:12px 0 5px;font-we
       <button class="lang" data-lang="mix">🌍 Gemischt<small>DE + EN parallel</small></button>
     </div>
     <div class="tiny" id="langHint" style="margin-top:9px">Erkennt Deutsch. Umschalten geht auch während der Aufnahme.</div>
+    <div class="row" style="margin-top:11px;gap:6px">
+      <span class="tiny" style="width:100%;color:var(--fg2);font-weight:600">Aufnahme-Modus</span>
+      <button class="mode active" data-cap="both">🎧 Audio + Text</button>
+      <button class="mode" data-cap="text">✍️ Nur Text</button>
+      <button class="mode" data-cap="audio">🔴 Nur Audio</button>
+    </div>
+    <div class="tiny" id="capHint" style="margin-top:7px"></div>
   </div>
+
+  <div id="hintBox" class="notice hidden" style="margin-bottom:12px"></div>
 
   <div class="recwrap">
     <canvas id="wave"></canvas>
+    <div id="engStatus" class="tiny engstat"></div>
     <div class="recinfo">
       <span class="reclamp" id="lamp"></span>
       <span id="timer">00:00</span>
@@ -295,6 +311,20 @@ label.fl{display:block;font-size:13px;color:var(--fg2);margin:12px 0 5px;font-we
   </div>
 </div>
 
+<!-- ============================ Diagnose ============================ -->
+<div class="sheet hidden" id="sheetDiag">
+  <div class="inner">
+    <div class="shead"><h2>🔬 Diagnose</h2><button class="iconbtn" data-close>✕</button></div>
+    <div class="row" style="margin-bottom:12px">
+      <button class="btn" id="btnMicTest">🎤 Mikrofon 5 s testen</button>
+      <button class="btn sm" id="btnDiagCopy">📋 Kopieren</button>
+    </div>
+    <div class="bar"><i id="micBar"></i></div>
+    <div class="tiny" id="micMsg" style="margin:6px 0 14px">Sprich beim Test normal — der Balken muss deutlich ausschlagen.</div>
+    <div id="diagBody" style="font-family:ui-monospace,Menlo,monospace;font-size:12.5px;white-space:pre-wrap"></div>
+  </div>
+</div>
+
 <!-- ============================ Statistik ============================ -->
 <div class="sheet hidden" id="sheetStats">
   <div class="inner">
@@ -338,6 +368,7 @@ label.fl{display:block;font-size:13px;color:var(--fg2);margin:12px 0 5px;font-we
     <div class="notice"><b>Datenschutz.</b> Der Key wird ausschließlich in diesem Browser gespeichert (localStorage) und nur direkt an die eingetragene Basis-URL geschickt. Aufnahmen und Transkripte liegen lokal in diesem Browser. Die <b>Live-Erkennung</b> läuft über die Spracherkennung des Browsers — Chrome überträgt dafür Audio an Google. Der <b>Pro-Modus</b> überträgt die Aufnahme an den eingetragenen Anbieter.</div>
 
     <div class="row" style="margin-top:16px">
+      <button class="btn" id="btnDiag">🔬 Diagnose</button>
       <button class="btn danger" id="btnWipe">Alle Daten löschen</button>
       <div class="spacer"></div>
       <button class="btn pri" id="btnSaveSettings">Speichern</button>
@@ -424,7 +455,7 @@ $$('.sheet').forEach(sh=>{
 /* ============================ 1 · Einstellungen ============================ */
 const SETTINGS_KEY='vn.settings.v1';
 const defaults={
-  lang:'de', theme:'auto',
+  lang:'de', theme:'auto', capture:'both',
   cmds:true, fillers:false, autoPunct:true, vocabFuzzy:true, wakeLock:true,
   autoStop:false, autoPro:false,
   vocab:'', apiKey:'', baseUrl:'https://api.openai.com/v1',
@@ -600,7 +631,36 @@ let session=null;                 // aktuelle Sitzung (siehe newSession)
 let stream=null, recorder=null, chunks=[];
 let actx=null, analyser=null, srcNode=null, waveRAF=0, freqData=null;
 let recStart=0, pausedAt=0, pausedTotal=0, tickTimer=0, wakeSentinel=null;
-let lastVoiceAt=0, lastSilenceSplit=0;
+let lastVoiceAt=0, lastSilenceSplit=0, peakLevel=0;
+
+/* Zustand der Live-Erkennung — sichtbar in der Statuszeile und in der Diagnose */
+const engStatus={running:false, finals:0, interims:0, lastError:'', note:'', warned:false};
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+
+function setEngStatus(){
+  const el=$('#engStatus'); if(!el) return;
+  let txt, cls='';
+  if(S.capture==='audio')        txt='Nur Mitschnitt — Live-Text ist ausgeschaltet';
+  else if(!SR_OK)                txt='Live-Erkennung in diesem Browser nicht verfügbar';
+  else if(engStatus.lastError)   { txt='Live-Erkennung: '+errLabel(engStatus.lastError); cls='bad'; }
+  else if(state===ST.REC&&engStatus.running)
+    txt='Live-Erkennung läuft · '+engStatus.finals+' erkannt';
+  else if(state===ST.REC)        txt='Live-Erkennung startet …';
+  else                           txt=engStatus.finals? engStatus.finals+' Segmente erkannt' : '';
+  if(engStatus.note) txt+= (txt?' · ':'')+engStatus.note;
+  el.textContent=txt; el.className='tiny engstat '+cls;
+}
+function errLabel(e){
+  return ({
+    'not-allowed':'vom Browser blockiert — Mikrofon erlauben',
+    'service-not-allowed':'vom System blockiert (Diktier-Dienst aus?)',
+    'network':'kein Netz zur Erkennung',
+    'no-speech':'nichts gehört',
+    'audio-capture':'kein Mikrofon',
+    'aborted':'abgebrochen'
+  })[e]||e;
+}
 
 function newSession(){
   session={
@@ -611,9 +671,11 @@ function newSession(){
   audioURL&&URL.revokeObjectURL(audioURL); audioURL=null; audioBlob=null;
   $('#player').removeAttribute('src'); $('#playCard').style.display='none';
   $('#aiCard').style.display='none';
-  pausedTotal=0; recStart=0;
+  pausedTotal=0; recStart=0; peakLevel=0;
+  Object.assign(engStatus,{running:false,finals:0,interims:0,lastError:'',note:'',warned:false});
+  $('#hintBox').classList.add('hidden');
   setTitle('Neue Aufnahme');
-  render(); updateStats(); updateTimer(0);
+  render(); updateStats(); updateTimer(0); setEngStatus();
 }
 
 function setTitle(t){ $('#sessTitle').textContent=t; }
@@ -624,21 +686,44 @@ function elapsed(){
 }
 
 /* --- 4a · Aufnahme starten ---------------------------------------------- */
-async function startRecording(){
+function startRecording(){
   if(state===ST.REC) return;
   if(state===ST.PAUSE) return resumeRecording();
-  if(state===ST.DONE && session.segments.length){
+  if(state===ST.DONE && (session.segments.length||audioBlob)){
     if(!confirm('Aktuelle Sitzung ist gespeichert. Neue Aufnahme starten?')) return;
     newSession();
   }
+  const wantAudio = S.capture!=='text';
+  const wantText  = S.capture!=='audio' && SR_OK;
+
+  stream=null; recorder=null; chunks=[]; peakLevel=0;
+  recStart=Date.now(); pausedTotal=0; lastVoiceAt=Date.now(); lastSilenceSplit=0;
+  Object.assign(engStatus,{finals:0,interims:0,lastError:'',note:'',warned:false});
+  $('#hintBox').classList.add('hidden');
+  state=ST.REC; syncUI(); setEngStatus();
+
+  /* Erst die Erkennung, dann das Mikrofon: Safari erlaubt recognition.start()
+     nur direkt aus der Tippgeste — nach einem await ist die Erlaubnis weg. */
+  if(wantText) startEngine();
+  tickTimer=setInterval(onTick,200);
+  requestWakeLock();
+  if(wantAudio) openRecorder(wantText);
+}
+
+/* Mikrofon-Mitschnitt — läuft nach dem Start der Erkennung an */
+async function openRecorder(hasText){
   try{
     stream=await navigator.mediaDevices.getUserMedia({audio:{
       echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1
     }});
   }catch(e){
-    toast('Kein Mikrofonzugriff: '+e.name); return;
+    engStatus.note='kein Mikrofon für den Mitschnitt ('+e.name+')'; setEngStatus();
+    if(hasText){ toast('Nur Live-Text — der Mitschnitt wurde abgelehnt'); return; }
+    toast('Kein Mikrofonzugriff: '+e.name);
+    clearInterval(tickTimer); state=ST.IDLE; recStart=0; releaseWakeLock(); syncUI();
+    return;
   }
-  chunks=[];
+  if(state!==ST.REC){ stream.getTracks().forEach(t=>t.stop()); stream=null; return; }
   const mime=['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus']
     .find(m=>window.MediaRecorder&&MediaRecorder.isTypeSupported(m))||'';
   try{
@@ -646,14 +731,8 @@ async function startRecording(){
     recorder.ondataavailable=e=>{ e.data&&e.data.size&&chunks.push(e.data); };
     recorder.onstop=onRecorderStop;
     recorder.start(1000);
-  }catch(e){ recorder=null; console.warn('MediaRecorder nicht verfügbar',e); }
-
+  }catch(e){ recorder=null; engStatus.note='Mitschnitt nicht möglich: '+e.message; setEngStatus(); }
   startMeter(stream);
-  recStart=Date.now(); pausedTotal=0; lastVoiceAt=Date.now(); lastSilenceSplit=0;
-  state=ST.REC; syncUI();
-  startEngine();
-  tickTimer=setInterval(onTick,200);
-  requestWakeLock();
 }
 
 function pauseRecording(){
@@ -685,19 +764,24 @@ function onRecorderStop(){
   finishSession();
 }
 async function finishSession(){
-  if(!session.segments.length){ toast('Nichts erkannt — Aufnahme verworfen'); return; }
-  if(!session.title) session.title=autoTitle();
+  const hasText=session.segments.length>0;
+  if(!hasText && !audioBlob){ toast('Nichts aufgenommen'); render(); return; }
+  if(!session.title) session.title = hasText? autoTitle() : 'Aufnahme '+fmtDate(session.createdAt);
   setTitle(session.title);
+  /* Die Aufnahme wird IMMER behalten — auch wenn die Live-Erkennung nichts geliefert hat.
+     Dann übernimmt entweder der Pro-Modus oder man hört sie sich einfach an. */
   await persist();
-  toast('Gespeichert · '+fmtTime(session.durationMs/1000));
-  if(S.autoPro&&hasKey()&&audioBlob) runPro();
+  render(); updateStats(); syncUI();
+  if(hasText) toast('Gespeichert · '+fmtTime(session.durationMs/1000));
+  else toast('Aufnahme gespeichert — kein Live-Text erkannt');
+  if(audioBlob && hasKey() && (S.autoPro || !hasText)) runPro();
 }
 function autoTitle(){
   const t=segsText(session.segments).replace(/\s+/g,' ').trim();
   return (t.split(/(?<=[.!?])\s/)[0]||t).slice(0,60)||'Aufnahme '+fmtDate(session.createdAt);
 }
 async function persist(){
-  if(!session||!session.segments.length) return;
+  if(!session||(!session.segments.length&&!audioBlob&&!session.pro)) return;
   const rec=Object.assign({},session);
   rec.wordCount=countWords(segsText(activeSegs()));
   await DB.put('sessions',rec);
@@ -737,6 +821,7 @@ function waveCtx(){
 }
 function drawWave(){
   const lvl=rms();
+  if(lvl>peakLevel) peakLevel=lvl;
   if(lvl>0.035) lastVoiceAt=Date.now();
   waveHist.push(lvl); if(waveHist.length>220) waveHist.shift();
   const {x,w,h}=waveCtx(), cy=h/2, bw=3, gap=2, n=Math.floor(w/(bw+gap));
@@ -765,12 +850,30 @@ addEventListener('resize',()=>{ if(!waveRAF) drawIdleWave(); });
 function onTick(){
   const el=elapsed(); updateTimer(el);
   const silence=(Date.now()-lastVoiceAt)/1000;
+  watchdog(el);
   /* Absatz nach längerer Pause */
   if(silence>1.5 && el-lastSilenceSplit>2 && session.segments.length){
     const last=session.segments[session.segments.length-1];
     if(!last.para){ last.para=true; lastSilenceSplit=el; render(); }
   }
   if(S.autoStop && silence>20 && state===ST.REC){ toast('Auto-Stopp nach 20 s Stille'); stopRecording(); }
+}
+/* Wächter: es wird gesprochen, aber die Erkennung liefert nichts?
+   Das passiert vor allem auf iOS, wenn der Mitschnitt das Mikrofon belegt. */
+function watchdog(el){
+  if(engStatus.warned || state!==ST.REC || S.capture==='audio' || !SR_OK) return;
+  const heardSpeech = peakLevel>0.05 || !stream;      // ohne Mitschnitt kennen wir den Pegel nicht
+  if(el<9 || engStatus.finals || engStatus.interims || !heardSpeech) return;
+  engStatus.warned=true;
+  engStatus.note='keine Ergebnisse';
+  setEngStatus();
+  showHint(stream
+    ? 'Die Live-Erkennung liefert nichts, obwohl das Mikrofon Ton bekommt. Auf dem iPhone blockiert der Mitschnitt oft die Erkennung. <b>Die Aufnahme läuft weiter und bleibt erhalten.</b> Danach hilft ✨ Pro — oder du schaltest oben auf <b>„Nur Text"</b> um (dann ohne Mitschnitt).'
+    : 'Die Live-Erkennung liefert bisher nichts. Sprich etwas lauter oder prüfe, ob der Browser das Mikrofon nutzen darf.');
+}
+function showHint(html){
+  const b=$('#hintBox'); b.innerHTML=html+' <button class="btn sm" style="margin-top:8px" onclick="this.parentNode.classList.add(\'hidden\')">OK</button>';
+  b.classList.remove('hidden');
 }
 function updateTimer(sec){ $('#timer').textContent=fmtTime(sec); }
 function countWords(t){ return (String(t).match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)||[]).length; }
@@ -816,21 +919,25 @@ function stopEngine(){
 
 function makeEngine(lang){
   const rec=new SR();
-  rec.lang=LANGTAG[lang]; rec.continuous=true; rec.interimResults=true; rec.maxAlternatives=1;
+  rec.lang=LANGTAG[lang];
+  /* Safari/iOS kann kein continuous — dort wird nach jedem Ergebnis neu gestartet */
+  rec.continuous=!IS_IOS; rec.interimResults=true; rec.maxAlternatives=1;
   const E={lang, rec, alive:false, lastStart:0, interim:'', interimStart:0, retries:0};
 
-  rec.onstart=()=>{ E.alive=true; E.retries=0; };
+  rec.onstart=()=>{ E.alive=true; E.retries=0; engStatus.running=true; engStatus.lastError=''; setEngStatus(); };
   rec.onerror=ev=>{
+    if(ev.error!=='no-speech'&&ev.error!=='aborted'){ engStatus.lastError=ev.error; setEngStatus(); }
     if(ev.error==='not-allowed'||ev.error==='service-not-allowed'){
-      toast('Spracherkennung blockiert — bitte Mikrofon erlauben'); E.dead=true;
+      toast('Spracherkennung blockiert — bitte Mikrofon/Diktierfunktion erlauben'); E.dead=true;
     } else if(ev.error==='network'){
       toast('Spracherkennung braucht Internet');
     }
   };
   rec.onend=()=>{
     E.alive=false;
-    if(E.dead || state!==ST.REC || !engines.includes(E)) return;
-    /* Chrome beendet nach Sprechpausen von selbst → neu starten, mit Bremse */
+    engStatus.running=engines.some(x=>x.alive);
+    if(E.dead || state!==ST.REC || !engines.includes(E)){ setEngStatus(); return; }
+    /* Browser beenden nach Sprechpausen von selbst → neu starten, mit Bremse */
     const wait=Math.min(1200, Math.max(120, 300-(Date.now()-E.lastStart)));
     setTimeout(()=>{ if(state===ST.REC&&engines.includes(E)) E.start(); }, wait);
   };
@@ -840,15 +947,16 @@ function makeEngine(lang){
       const r=ev.results[i], alt=r[0];
       if(r.isFinal){
         const t=(alt.transcript||'').trim();
-        if(t) handleFinal(E,t, typeof alt.confidence==='number'?alt.confidence:0.6);
+        if(t){ engStatus.finals++; handleFinal(E,t, typeof alt.confidence==='number'?alt.confidence:0.6); }
         E.interimStart=0;
       }else{
         interim+=alt.transcript;
+        if(interim) engStatus.interims++;
         if(!E.interimStart) E.interimStart=elapsed();
       }
     }
     E.interim=interim.trim();
-    showInterim();
+    showInterim(); setEngStatus();
   };
   E.start=()=>{ try{ E.lastStart=Date.now(); rec.start(); }catch(e){} };
   E.stop =()=>{ E.dead=true; try{ rec.abort(); }catch(e){} };
@@ -928,9 +1036,11 @@ function displayText(seg){
 function render(scroll=false){
   const box=$('#transcript'), segs=activeSegs();
   if(!segs.length){
-    box.innerHTML='<div class="empty"><span class="big">🎧</span>'+
-      (SR_OK?'Tippe auf das Mikrofon und sprich einfach los.':'Aufnahme starten — das Transkript kommt danach aus dem Pro-Modus.')+
-      '</div>';
+    box.innerHTML = (state===ST.DONE&&audioBlob) ? noTextHelp()
+      : '<div class="empty"><span class="big">🎧</span>'+
+        (SR_OK?'Tippe auf das Mikrofon und sprich einfach los.':'Aufnahme starten — das Transkript kommt danach aus dem Pro-Modus.')+
+        '</div>';
+    wireHelp();
     return;
   }
   box.innerHTML='';
@@ -958,6 +1068,31 @@ function render(scroll=false){
   });
   box.appendChild(frag);
   if(scroll) box.lastElementChild&&box.lastElementChild.scrollIntoView({block:'nearest',behavior:'smooth'});
+}
+
+/* Aufnahme da, aber kein Live-Text — erklären statt nur ein leeres Feld zeigen */
+function noTextHelp(){
+  return '<div class="empty" style="text-align:left;padding:14px 6px">'+
+    '<b style="color:var(--fg);font-size:15px">Die Aufnahme ist gespeichert — nur der Live-Text fehlt.</b><br><br>'+
+    'Die Spracherkennung des Browsers hat nichts geliefert'+
+    (engStatus.lastError?' ('+esc(errLabel(engStatus.lastError))+')':'')+
+    '. Auf dem iPhone passiert das oft, weil der Mitschnitt das Mikrofon belegt.<br><br>'+
+    'So kommst du trotzdem zum Text:'+
+    '<div class="row" style="margin-top:10px">'+
+      '<button class="btn sm ok" id="helpPro">✨ Pro-Transkript</button>'+
+      '<button class="btn sm" id="helpKey">⚙️ API-Key eintragen</button>'+
+      '<button class="btn sm" id="helpText">✍️ Nur-Text-Modus</button>'+
+      '<button class="btn sm" id="helpDiag">🔬 Diagnose</button>'+
+    '</div>'+
+    '<div class="tiny" style="margin-top:10px">Die Aufnahme kannst du oben abspielen und über ⬇︎ als Audiodatei sichern — nichts geht verloren.</div>'+
+  '</div>';
+}
+function wireHelp(){
+  const p=$('#helpPro'), k=$('#helpKey'), t=$('#helpText'), d=$('#helpDiag');
+  p&&(p.onclick=runPro);
+  k&&(k.onclick=()=>{ fillSettings(); openSheet('#sheetSettings'); });
+  t&&(t.onclick=()=>{ setCapture('text'); toast('Nur-Text-Modus — jetzt neu aufnehmen'); });
+  d&&(d.onclick=openDiag);
 }
 
 /* ============================ 7 · Wiedergabe ============================ */
@@ -1322,6 +1457,65 @@ async function restoreBackup(file){
   }catch(e){ toast('Import fehlgeschlagen: '+e.message); }
 }
 
+/* ============================ 10b · Diagnose ============================ */
+async function diagText(){
+  let quota='—';
+  try{ const e=await navigator.storage.estimate(); quota=fmtBytes(e.usage)+' von '+fmtBytes(e.quota); }catch(e){}
+  const rows=[
+    ['Browser', navigator.userAgent],
+    ['Gerät', IS_IOS?'iOS/iPadOS':(navigator.platform||'—')],
+    ['Seite sicher (https/localhost)', String(window.isSecureContext)],
+    ['Spracherkennung vorhanden', SR_OK?'ja':'nein'],
+    ['Erkennung läuft', String(engStatus.running)],
+    ['Erkannte Segmente / Zwischenergebnisse', engStatus.finals+' / '+engStatus.interims],
+    ['Letzter Erkennungsfehler', engStatus.lastError? engStatus.lastError+' ('+errLabel(engStatus.lastError)+')' : '—'],
+    ['Hinweis', engStatus.note||'—'],
+    ['Aufnahme-Modus', S.capture],
+    ['Sprache', S.lang],
+    ['Mikrofon-Spitzenpegel', peakLevel? Math.round(peakLevel*100)+'%' : 'noch nicht gemessen'],
+    ['MediaRecorder', window.MediaRecorder? 'vorhanden':'fehlt'],
+    ['Aufnahmeformat', session&&session.audioType||'—'],
+    ['Aufnahmegröße', session&&session.audioSize? fmtBytes(session.audioSize):'—'],
+    ['Dauer', session? fmtTime(session.durationMs/1000):'—'],
+    ['API-Key hinterlegt', hasKey()?'ja':'nein'],
+    ['Speicher', quota],
+    ['App-Version', APP_VERSION]
+  ];
+  return rows.map(([k,v])=>k+': '+v).join('\n');
+}
+async function openDiag(){
+  openSheet('#sheetDiag');
+  $('#diagBody').textContent=await diagText();
+}
+$('#btnDiagCopy').onclick=async()=>copyText(await diagText());
+$('#btnMicTest').onclick=async()=>{
+  const msg=$('#micMsg'), bar=$('#micBar');
+  let st;
+  try{ st=await navigator.mediaDevices.getUserMedia({audio:true}); }
+  catch(e){ msg.textContent='Kein Zugriff: '+e.name+' — im Browser das Mikrofon für diese Seite erlauben.'; return; }
+  const ac=new (window.AudioContext||window.webkitAudioContext)();
+  const an=ac.createAnalyser(); an.fftSize=1024;
+  ac.createMediaStreamSource(st).connect(an);
+  const buf=new Uint8Array(an.fftSize);
+  let peak=0, t0=Date.now();
+  msg.textContent='Läuft … sprich jetzt.';
+  (function loop(){
+    an.getByteTimeDomainData(buf);
+    let s=0; for(let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; s+=v*v; }
+    const lvl=Math.sqrt(s/buf.length); peak=Math.max(peak,lvl);
+    bar.style.width=clamp(lvl*300,0,100)+'%';
+    if(Date.now()-t0<5000) requestAnimationFrame(loop);
+    else{
+      st.getTracks().forEach(t=>t.stop()); ac.close(); bar.style.width='0';
+      peakLevel=Math.max(peakLevel,peak);
+      msg.textContent = peak>0.05
+        ? '✅ Mikrofon funktioniert (Spitze '+Math.round(peak*100)+'%). Wenn trotzdem kein Live-Text kommt, liegt es an der Spracherkennung des Browsers — dann „Nur Text" probieren oder ✨ Pro nutzen.'
+        : '⚠️ Fast kein Ton (Spitze '+Math.round(peak*100)+'%). Mikrofon blockiert, stummgeschaltet oder ein anderes Gerät ausgewählt?';
+      openDiag();
+    }
+  })();
+};
+
 /* ============================ 11 · Statistik ============================ */
 const STOP=new Set([...DE_WORDS,...EN_WORDS,'ja','ok','okay','so','dann','mal','noch','sehr']);
 function openStats(){
@@ -1378,6 +1572,22 @@ function syncUI(){
   $('#btnView').textContent= session&&session.view==='pro'?'Pro':'Live';
   $('#btnPro').classList.toggle('hidden',!audioBlob);
 }
+
+/* Aufnahme-Modus */
+function setCapture(c){
+  S.capture=c; saveSettings();
+  $$('.mode').forEach(b=>b.classList.toggle('active',b.dataset.cap===c));
+  $('#capHint').textContent={
+    both:'Schneidet Audio mit und schreibt live mit. Standard — funktioniert am besten in Chrome/Edge.',
+    text:'Schreibt nur live mit, ohne Audio-Mitschnitt. Nimm das, wenn die Live-Erkennung sonst nichts liefert (typisch iPhone). Kein Audio, kein Pro-Modus.',
+    audio:'Nimmt nur Audio auf, ohne Live-Text. Das Transkript kommt danach per ✨ Pro (API-Key nötig).'
+  }[c];
+  setEngStatus(); syncUI();
+}
+$$('.mode').forEach(b=>b.onclick=()=>{
+  if(state===ST.REC||state===ST.PAUSE) return toast('Erst die laufende Aufnahme beenden');
+  setCapture(b.dataset.cap);
+});
 
 /* Sprachwahl */
 $$('.lang').forEach(b=>b.onclick=()=>{
@@ -1475,6 +1685,7 @@ $('#btnSaveSettings').onclick=()=>{
   S.chatModel=$('#setChatModel').value.trim()||defaults.chatModel;
   saveSettings(); closeSheet($('#sheetSettings')); syncUI(); toast('Gespeichert');
 };
+$('#btnDiag').onclick=openDiag;
 $('#btnWipe').onclick=async()=>{
   if(!confirm('Wirklich ALLE Aufnahmen, Transkripte und Einstellungen in diesem Browser löschen?')) return;
   await DB.clear('sessions'); await DB.clear('audio');
@@ -1498,6 +1709,7 @@ addEventListener('keydown',e=>{
 function checkSupport(){
   const box=$('#warnBox'); const msgs=[];
   if(!SR_OK) msgs.push('<b>Live-Erkennung nicht verfügbar.</b> Dieser Browser (z. B. Firefox oder ältere iOS-Versionen) kann nicht live mitschreiben. Aufnehmen funktioniert trotzdem — mit hinterlegtem API-Key liefert danach der Pro-Modus das Transkript. Am besten läuft die App in <b>Chrome</b> oder <b>Edge</b>.');
+  else if(IS_IOS) msgs.push('<b>iPhone/iPad:</b> Safari kann live mitschreiben, blockiert die Erkennung aber oft, solange gleichzeitig Audio mitgeschnitten wird. Wenn kein Text erscheint: oben auf <b>„✍️ Nur Text"</b> umschalten. Die Aufnahme selbst bleibt in jedem Fall erhalten — mit API-Key liefert ✨ Pro danach das genauere Transkript.');
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)
     msgs.push('<b>Kein Mikrofonzugriff möglich.</b> Die Seite muss über <b>https</b> oder localhost geöffnet werden.');
   if(!msgs.length) return box.classList.add('hidden');
@@ -1513,6 +1725,7 @@ addEventListener('beforeunload',e=>{
 const APP_VERSION='1.0';
 applyTheme();
 syncLangUI();
+setCapture(S.capture||'both');
 newSession();
 syncUI();
 drawIdleWave();

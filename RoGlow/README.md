@@ -44,13 +44,13 @@ Account trägst du.
 |---|---|
 | `Install-RoGlow.ps1` | Installer: Roblox finden, ReShade + Shader + Preset einrichten |
 | `Uninstall-RoGlow.ps1` | Entfernt exakt die installierten Dateien wieder |
-| `Apply-FastFlags.ps1` | Grafik-Verbesserung ohne Injection (funktioniert heute) |
+| `Apply-FastFlags.ps1` | Grafik-Verbesserung ohne Injection (funktioniert heute), inkl. `-Audit` |
 | `Test-RoGlowPreset.ps1` | Prüft Presets gegen die echten Shader (Namen + Wertebereiche) |
 | `RoGlow.cmd` | Doppelklick-Starter, umgeht die PowerShell-Ausführungsrichtlinie |
 | `presets/RoGlow-Performance.ini` | ~0.5 ms — Laptop / iGPU |
 | `presets/RoGlow-Balanced.ini` | ~3–5 ms — Standard, 1080p Mittelklasse |
 | `presets/RoGlow-Quality.ini` | ~8–11 ms — RTX 4070+, für Screenshots |
-| `config/fastflags-quality.json` | Die FastFlags als reine JSON zum Import in Bloxstrap |
+| `config/fastflags-quality.json` | Das Quality-Profil als reine JSON zum Import in Bloxstrap |
 
 ---
 
@@ -318,47 +318,89 @@ Engine-Schalter setzen — dieselben, die Bloxstrap über seinen
 FastFlag-Editor schreibt. Kein fremder Code, keine DLL, kein
 Anti-Cheat-Konflikt.
 
+### Seit 29.09.2025 gilt eine Allowlist
+
+Roblox hat die lokal setzbaren FastFlags auf **18 Stück** begrenzt
+([offizielle Ankündigung](https://devforum.roblox.com/t/allowlist-for-local-client-configuration-via-fast-flags/3966569)).
+Alles, was nicht auf der Liste steht, wird beim Start **stillschweigend
+ignoriert** — keine Fehlermeldung, keine Wirkung.
+
+Genau daran scheitern fast alle FastFlag-Listen, die im Netz kursieren: sie
+sind älter als die Allowlist. Wer sie einträgt, ändert schlicht nichts und
+merkt es nicht.
+
+Dieses Script setzt ausschließlich allowlistete Flags. Ein eingebauter
+Selbsttest bricht ab, falls je ein nicht-allowlistetes Flag in ein Profil
+gerät — dieselbe Prüfung hat drei Flags aus der ersten Fassung dieses Tools
+als wirkungslos entlarvt, darunter `FFlagDebugForceFutureIsBrightPhase3` und
+`FIntRenderShadowIntensity`.
+
+Die Allowlist gilt für den **Player**. Roblox Studio behält laut Roblox
+weiterhin die vollen FastFlags.
+
+### Prüfen, was bei dir überhaupt noch wirkt
+
 ```powershell
-.\Apply-FastFlags.ps1                       # Profil Quality
-.\Apply-FastFlags.ps1 -Profile Balanced     # ohne MSAA
-.\Apply-FastFlags.ps1 -Bloxstrap            # zusätzlich in Bloxstrap schreiben
-.\Apply-FastFlags.ps1 -Remove               # rückgängig
+.\Apply-FastFlags.ps1 -Audit
 ```
 
-Gesetzt werden:
+Schreibt nichts. Liest jede gefundene `ClientAppSettings.json` (auch die von
+Bloxstrap) und teilt jedes Flag ein in *wirkt* / *wird ignoriert*, dazu die
+vollständige Allowlist mit Roblox' Standardwerten. Wenn du irgendwann eine
+FastFlag-Liste aus dem Netz übernommen hast, sagt dir das hier in fünf
+Sekunden, wie viel davon noch etwas tut.
 
-| Flag | Wert | Wirkung |
-|---|---|---|
-| `DFIntDebugFRMQualityLevelOverride` | `21` | Internes Qualitätslevel auf Maximum (entspricht dem 1–21-Regler) |
-| `FFlagDebugForceFutureIsBrightPhase3` | `True` | Future-Beleuchtung: echte Schattenwürfe statt Voxel-Licht |
-| `FIntRenderShadowIntensity` | `100` | Volle Schattenstärke |
-| `FIntDebugForceMSAASamples` | `4` | 4× Kantenglättung (nur im Quality-Profil; Werte über 4 erzeugen bekannte Viewport-Fehler) |
-| `FFlagDebugGraphicsPreferD3D11` | `True` | Rendering-API auf D3D11 festnageln |
-| `FFlagDebugGraphicsPreferD3D11FL10` | `False` | Kein Rückfall auf Feature-Level 10 |
-| `FFlagDebugGraphicsPreferVulkan` | `False` | Kein Wechsel auf Vulkan |
+### Setzen
+
+```powershell
+.\Apply-FastFlags.ps1                          # Profil Quality
+.\Apply-FastFlags.ps1 -Profile Balanced        # MSAA 2x, LOD 2x
+.\Apply-FastFlags.ps1 -Profile Performance     # auf FPS getrimmt
+.\Apply-FastFlags.ps1 -Bloxstrap               # zusätzlich in Bloxstrap
+.\Apply-FastFlags.ps1 -Remove                  # rückgängig
+```
+
+| Flag | Quality | Balanced | Performance | Wirkung |
+|---|---|---|---|---|
+| `DFIntDebugFRMQualityLevelOverride` | `21` | `21` | `10` | Internes Qualitätslevel (1–21). Der wirksamste Einzelwert — steuert intern Beleuchtung, Schatten und Effektdichte gemeinsam und geht über das hinaus, was der Regler in der Roblox-UI zulässt. |
+| `FIntDebugForceMSAASamples` | `4` | `2` | `0` | Kantenglättung. Erlaubt sind 0/1/2/4/8, über 4 gibt es bekannte Viewport-Fehler. Der Sprung von 0 auf 2 bringt optisch am meisten. |
+| `DFFlagTextureQualityOverrideEnabled` | `True` | `True` | `False` | Schaltet die Texturqualitäts-Übersteuerung ein |
+| `DFIntTextureQualityOverride` | `3` | `3` | — | Texturqualität 0–3, höher ist besser |
+| `DFIntCSGLevelOfDetailSwitchingDistance` *(+L12/L23/L34)* | 4× | 2× | Standard | Entfernungen, ab denen Teile auf gröbere Detailstufen wechseln. Höher = das sichtbare „Aufploppen" verschwindet. Standard ist 250/500/750/1000. |
+| `FIntFRMMinGrassDistance` / `MaxGrassDistance` | `400`/`1000` | `100`/`290` | `0`/`0` | Wie weit Gras gerendert wird. Gras ist einer der teuersten Posten bei Roblox. |
+| `FFlagDebugGraphicsPreferD3D11` | `True` | `True` | `True` | Rendering-API auf D3D11 festnageln |
+| `FFlagDebugGraphicsPreferVulkan` / `PreferOpenGL` | `False` | `False` | `False` | Kein Wechsel auf eine andere API |
+| `DFFlagDebugPauseVoxelizer` | `False` | `False` | `False` | Ausdrücklich aus: `True` friert die Voxel-Beleuchtung ein |
+| `FFlagDebugSkyGray` | `False` | `False` | `False` | Ausdrücklich aus: `True` ersetzt den Himmel durch Grau |
+
+Die letzten beiden werden bewusst explizit auf `False` gesetzt statt
+weggelassen — sie stehen in vielen kursierenden „FPS-Boost"-Listen, und so
+wird eine alte Konfiguration überschrieben statt stehengelassen.
 
 Optisch ist das weniger spektakulär als ReShade — kein Bloom, keine
-Reflexionen, keine Farbkorrektur. Dafür funktioniert es.
+Reflexionen, keine Farbkorrektur. Dafür wirkt es.
 
 **Nach dem Setzen:** im Spiel *Esc → Einstellungen → Grafikmodus* auf
 **Manuell** stellen und den Regler ganz nach rechts. Sonst überschreibt die
 Automatik das erzwungene Qualitätslevel wieder.
 
-Zwei Einschränkungen, ehrlich gesagt:
+Zwei Einschränkungen:
 
-- FastFlag-Namen sind von Roblox nicht dokumentiert und können mit jedem
-  Client-Update verschwinden. Unbekannte Flags ignoriert Roblox stillschweigend
-   — ein veraltetes Flag macht also nichts kaputt, es tut dann einfach nichts.
-- Ohne Bloxstrap setzt Roblox die Datei bei jedem Update zurück. Mit
+- Ohne Bloxstrap setzt Roblox die Datei bei jedem Client-Update zurück. Mit
   `-Bloxstrap` wird zusätzlich in Bloxstraps eigene Konfiguration geschrieben,
   die Updates überlebt.
+- Für `DFFlagTextureQualityOverrideEnabled` gibt es
+  [einen offenen Bloxstrap-Bugreport](https://github.com/bloxstraplabs/bloxstrap/issues/4173),
+  wonach die Texturübersteuerung seit Bloxstrap 2.8.0 nicht greift. Das Flag
+  ist allowlistet und korrekt gesetzt; ob es ankommt, zeigt dir der
+  Sichtvergleich.
 
 Bestehende, nicht von RoGlow stammende Flags bleiben beim Setzen *und* beim
 Entfernen unangetastet; die ursprüngliche Datei wird einmalig als
 `.roglow-backup` gesichert.
 
 Wer lieber selbst in Bloxstrap importiert: `config/fastflags-quality.json`
-enthält dieselben Flags als reine JSON für *Fast Flags → Fast Flag Editor →
+enthält das Quality-Profil als reine JSON für *Fast Flags → Fast Flag Editor →
 Import JSON*.
 
 ---

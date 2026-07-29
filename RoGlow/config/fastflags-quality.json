@@ -1,0 +1,17 @@
+{
+  "FFlagDebugGraphicsPreferD3D11": "True",
+  "FFlagDebugGraphicsPreferVulkan": "False",
+  "FFlagDebugGraphicsPreferOpenGL": "False",
+  "DFFlagDebugPauseVoxelizer": "False",
+  "FFlagDebugSkyGray": "False",
+  "DFIntDebugFRMQualityLevelOverride": "21",
+  "FIntDebugForceMSAASamples": "4",
+  "DFFlagTextureQualityOverrideEnabled": "True",
+  "DFIntTextureQualityOverride": "3",
+  "DFIntCSGLevelOfDetailSwitchingDistance": "1000",
+  "DFIntCSGLevelOfDetailSwitchingDistanceL12": "2000",
+  "DFIntCSGLevelOfDetailSwitchingDistanceL23": "3000",
+  "DFIntCSGLevelOfDetailSwitchingDistanceL34": "4000",
+  "FIntFRMMinGrassDistance": "400",
+  "FIntFRMMaxGrassDistance": "1000"
+}

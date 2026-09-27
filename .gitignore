@@ -1,0 +1,4 @@
+# Musik-Dateien (z. B. der Original-Soundtrack) bleiben lokal und kommen nicht ins Repo
+*.mp3
+*.ogg
+*.wav

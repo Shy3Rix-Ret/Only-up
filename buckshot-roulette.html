@@ -156,6 +156,7 @@
   </div>
 </div>
 
+<input type="file" id="musicFile" accept="audio/*,.mp3,.ogg,.wav" class="hidden">
 <div id="roundTitle"></div>
 <div id="msg"></div>
 <div id="dialog"></div>
@@ -228,7 +229,7 @@ const store = {
 
 const OPT = Object.assign({
   music: 0.7, sfx: 0.9, retro: true, hud: false, pool: 'all', skipIntro: false,
-  voice: true, autoPlace: false, shake: true, dealerModel: 'file',
+  voice: true, autoPlace: false, shake: true, dealerModel: 'file', musicSrc: 'file',
 }, store.get('opt', {}));
 const saveOpt = () => store.set('opt', OPT);
 
@@ -320,6 +321,7 @@ const SND = {
     this.softCurve = this.makeCurve(8);
     this.applyVolumes();
     MUSIC.attach(this);
+    loadCustomMusic();
   },
   makeCurve(k) {
     const n = 2048, c = new Float32Array(n);
@@ -335,9 +337,11 @@ const SND = {
     if (!this.ctx) return;
     this.sfx.gain.value = OPT.sfx; this.sfxRev.gain.value = OPT.sfx;
     this.mus.gain.value = OPT.music * 0.6;
+    if (MUSIC.el) MUSIC.el.volume = clamp(OPT.music, 0, 1) * (MUSIC.elMuffled ? 0.3 : 1);
   },
   setMuffle(on, sec = 1.2) {
     if (!this.ctx) return;
+    if (MUSIC.el) { MUSIC.elMuffled = on; MUSIC.el.volume = clamp(OPT.music, 0, 1) * (on ? 0.3 : 1); }
     const f = this.muffle.frequency, t = this.ctx.currentTime;
     f.cancelScheduledValues(t); f.setValueAtTime(f.value, t);
     f.exponentialRampToValueAtTime(on ? 380 : 20000, t + sec);
@@ -509,6 +513,25 @@ const S = {
   paper() { SND.noise({ type: 'bandpass', f: 2600, q: 0.9, dur: 0.3, vol: 0.18 }); SND.noise({ type: 'bandpass', f: 3500, q: 1.2, dur: 0.2, vol: 0.12, delay: 0.2 }); },
   pen() { for (let i = 0; i < 6; i++) SND.noise({ type: 'bandpass', f: rand(3000, 5000), q: 3, a: 0.02, dur: 0.1, vol: 0.12, delay: i * 0.1 }); },
   cash() { SND.fm({ f: 1600, ratio: 1.5, index: 1, dur: 0.7, vol: 0.08, rev: 0.4 }); SND.fm({ f: 2400, ratio: 1.5, index: 1, dur: 0.9, vol: 0.07, delay: 0.1, rev: 0.4 }); for (let i = 0; i < 10; i++) SND.noise({ type: 'bandpass', f: 3000, q: 2, dur: 0.04, vol: 0.12, delay: 0.3 + i * 0.05 }); },
+  laugh() {
+    for (let i = 0; i < 5; i++) {
+      const d = i * 0.16;
+      SND.tone({ type: 'sawtooth', f: 150 - i * 9, f1: 105 - i * 8, slide: 0.12, dur: 0.14, vol: 0.08, delay: d, filter: 'bandpass', ff: 650, q: 3, rev: 0.4 });
+      SND.noise({ type: 'bandpass', f: 900, q: 2.5, dur: 0.11, vol: 0.09, delay: d });
+    }
+  },
+  gasp() { SND.noise({ type: 'bandpass', f: 1100, f1: 2600, q: 1.2, a: 0.05, dur: 0.55, vol: 0.28 }); SND.tone({ type: 'sine', f: 220, f1: 330, dur: 0.4, vol: 0.04, delay: 0.05 }); },
+  clack(d = 0, v = 1) { SND.noise({ type: 'bandpass', f: 2600, q: 5, dur: 0.03, vol: 0.32 * v, delay: d }); SND.tone({ type: 'triangle', f: 720, f1: 380, dur: 0.05, vol: 0.09 * v, delay: d }); },
+  flame() { SND.noise({ type: 'bandpass', f: 5200, q: 8, dur: 0.03, vol: 0.45 }); SND.noise({ type: 'bandpass', f: 900, q: 0.8, a: 0.03, dur: 0.5, vol: 0.2, delay: 0.04 }); },
+  splash() { SND.noise({ type: 'bandpass', f: 1500, f1: 450, q: 0.8, dur: 0.5, vol: 0.32 }); for (let i = 0; i < 5; i++) SND.tone({ type: 'sine', f: rand(900, 1600), f1: 400, dur: 0.06, vol: 0.05, delay: 0.1 + i * 0.07 }); },
+  stab() { SND.noise({ type: 'highpass', f: 3000, dur: 0.05, vol: 0.4 }); SND.tone({ type: 'sine', f: 210, f1: 80, dur: 0.15, vol: 0.32 }); },
+  pour() { SND.noise({ type: 'bandpass', f: 3600, q: 1, a: 0.1, dur: 0.9, vol: 0.14 }); },
+  glint() { SND.tone({ type: 'sine', f: 2600, f1: 4200, dur: 0.35, vol: 0.05, rev: 0.5 }); SND.fm({ f: 3100, ratio: 1.5, index: 0.5, dur: 0.6, vol: 0.03, delay: 0.05, rev: 0.5 }); },
+  crush() { SND.noise({ type: 'bandpass', f: 1800, q: 1.5, dur: 0.18, vol: 0.38 }); SND.tone({ type: 'square', f: 300, f1: 120, dur: 0.1, vol: 0.06 }); },
+  cloth() { SND.noise({ type: 'bandpass', f: 700, f1: 1700, q: 0.7, dur: 0.35, vol: 0.22 }); },
+  snap() { SND.noise({ type: 'bandpass', f: 3000, q: 2, dur: 0.04, vol: 0.3 }); SND.noise({ type: 'bandpass', f: 1800, q: 1, dur: 0.12, vol: 0.12, delay: 0.03 }); },
+  exhale() { SND.noise({ type: 'lowpass', f: 1400, f1: 400, q: 0.5, a: 0.05, dur: 0.9, vol: 0.14 }); },
+  zapArc() { SND.noise({ type: 'bandpass', f: 4000, f1: 1500, q: 3, dur: 0.22, vol: 0.22, dist: true }); },
   latch() { SND.fm({ f: 800, ratio: 3.3, index: 4, dur: 0.12, vol: 0.12 }); SND.fm({ f: 820, ratio: 3.3, index: 4, dur: 0.12, vol: 0.12, delay: 0.15 }); },
 };
 
@@ -561,14 +584,37 @@ const MUSIC = {
     [[0, 70, 4], [4, 65, 4], [8, 62, 4], [12, 65, 4]],
     [[0, 64, 6], [6, 61, 2], [8, 64, 4], [12, 69, 4]],
   ],
+  // user-supplied soundtrack (e.g. the original track, loaded locally) -> gapless loop
+  custom: null, customName: '', src: null, el: null, elMuffled: false,
+  useCustom() { return OPT.musicSrc !== 'synth' && (this.custom || this.el); },
+  setCustom(buf, name) {
+    this.custom = trimSilence(this.snd.ctx, buf); this.customName = name || 'CUSTOM TRACK';
+    if (this.playing) { const l = this.level; this.stop(); this.start(l); }
+    if (typeof refreshMusicStatus === 'function') refreshMusicStatus();
+  },
+  playCustom() {
+    const ctx = this.snd.ctx;
+    if (this.custom) {
+      const s = ctx.createBufferSource(); s.buffer = this.custom; s.loop = true;
+      const g = ctx.createGain(); g.gain.value = 0.9; s.connect(g); g.connect(this.snd.musIn);
+      s.start(ctx.currentTime + 0.05); this.src = s;
+    } else if (this.el) { this.el.currentTime = 0; this.el.volume = clamp(OPT.music, 0, 1) * (this.elMuffled ? 0.3 : 1); this.el.play().catch(() => {}); }
+  },
   start(level = 1) {
     if (!this.snd || !this.snd.ctx) return;
     this.level = level;
     if (this.playing) return;
-    this.playing = true; this.step = 0; this.next = this.snd.ctx.currentTime + 0.1;
+    this.playing = true;
+    if (this.useCustom()) { this.playCustom(); return; }
+    this.step = 0; this.next = this.snd.ctx.currentTime + 0.1;
     this.timer = setInterval(() => this.tick(), 25);
   },
-  stop() { this.playing = false; clearInterval(this.timer); this.timer = null; },
+  stop() {
+    this.playing = false; clearInterval(this.timer); this.timer = null;
+    if (this.src) { try { this.src.stop(); } catch (e) { /* already stopped */ } this.src = null; }
+    if (this.el) this.el.pause();
+  },
+  restart() { if (!this.playing) return; const l = this.level; this.stop(); this.start(l); },
   setLevel(l) { this.level = l; },
   tick() {
     const ctx = this.snd.ctx; if (!ctx || !this.playing) return;
@@ -649,6 +695,56 @@ const MUSIC = {
   },
 };
 
+// ---------- custom soundtrack loading ----------
+// Order: file stored in this browser (OPTIONS -> LOAD MUSIC) -> general-release.mp3 next to this html.
+// The track is never bundled into this file: it stays on the player's device.
+function trimSilence(ctx, buf) {
+  const th = 0.0015, ch = buf.getChannelData(0), n = buf.length;
+  let a = 0, b = n - 1;
+  while (a < n && Math.abs(ch[a]) < th) a++;
+  while (b > a && Math.abs(ch[b]) < th) b--;
+  if (a >= b || (a < 64 && b > n - 64)) return buf;
+  const out = ctx.createBuffer(buf.numberOfChannels, b - a + 1, buf.sampleRate);
+  for (let c = 0; c < buf.numberOfChannels; c++) out.copyToChannel(buf.getChannelData(c).subarray(a, b + 1), c);
+  return out;
+}
+const MUSIC_DB = {
+  open() { return new Promise((res, rej) => { const r = indexedDB.open('br_music', 1); r.onupgradeneeded = () => r.result.createObjectStore('files'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+  async get() { try { const db = await this.open(); return await new Promise(res => { const q = db.transaction('files').objectStore('files').get('bgm'); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); } catch (e) { return null; } },
+  async set(rec) { try { const db = await this.open(); await new Promise(res => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').put(rec, 'bgm'); tx.oncomplete = res; tx.onerror = res; }); } catch (e) { /* storage blocked */ } },
+  async clear() { try { const db = await this.open(); await new Promise(res => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').delete('bgm'); tx.oncomplete = res; tx.onerror = res; }); } catch (e) { /* storage blocked */ } },
+};
+async function decodeInto(arrayBuf, name) {
+  const buf = await SND.ctx.decodeAudioData(arrayBuf.slice(0));
+  MUSIC.setCustom(buf, name);
+}
+async function loadCustomMusic() {
+  if (!SND.ctx) return;
+  const rec = await MUSIC_DB.get();
+  if (rec && rec.data) { try { await decodeInto(rec.data, rec.name); return; } catch (e) { console.warn('stored music could not be decoded', e); } }
+  // a file placed next to the html (works when served over http/https)
+  try {
+    const r = await fetch('general-release.mp3');
+    if (r.ok) { await decodeInto(await r.arrayBuffer(), 'general-release.mp3'); return; }
+  } catch (e) { /* file:// or missing */ }
+  // file:// fallback: plain audio element (no muffle filter, but it loops)
+  const el = new Audio(); el.loop = true; el.preload = 'auto';
+  el.addEventListener('canplaythrough', () => {
+    if (MUSIC.custom || MUSIC.el) return;
+    MUSIC.el = el; MUSIC.customName = 'general-release.mp3';
+    if (MUSIC.playing) MUSIC.restart();
+    if (typeof refreshMusicStatus === 'function') refreshMusicStatus();
+  }, { once: true });
+  el.addEventListener('error', () => {}, { once: true });
+  el.src = 'general-release.mp3';
+}
+async function importMusicFile(file) {
+  SND.init();
+  const data = await file.arrayBuffer();
+  await decodeInto(data, file.name);
+  await MUSIC_DB.set({ name: file.name, data });
+}
+
 // speech for the burner phone voice
 function speak(text) {
   if (!OPT.voice || !('speechSynthesis' in window) || clock.scale > 3) return;
@@ -700,11 +796,13 @@ const post = {
     uniforms: {
       tDiffuse: { value: rt.texture }, uRes: { value: new THREE.Vector2(64, 64) }, uTime: { value: 0 },
       uFlash: { value: 0 }, uFade: { value: 1 }, uRetro: { value: 1 }, uExposure: { value: 1 }, uRed: { value: 0 }, uGrain: { value: 0.05 },
+      uVig: { value: 0 }, uAberr: { value: 0 }, uTint: { value: new THREE.Vector3(1, 1, 1) }, uTintAmt: { value: 0 },
       uPal: { value: PALETTE.map(h => new THREE.Vector3(((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255)) },
     },
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }`,
     fragmentShader: `
-      uniform sampler2D tDiffuse; uniform vec2 uRes; uniform float uTime, uFlash, uFade, uRetro, uExposure, uRed, uGrain;
+      uniform sampler2D tDiffuse; uniform vec2 uRes; uniform float uTime, uFlash, uFade, uRetro, uExposure, uRed, uGrain, uVig, uAberr, uTintAmt;
+      uniform vec3 uTint;
       uniform vec3 uPal[${PALETTE.length}];
       varying vec2 vUv;
       vec3 nearestPal(vec3 c){
@@ -725,10 +823,14 @@ const post = {
         vec2 px = floor(vUv * uRes);
         vec2 uv = mix(vUv, (px + .5) / uRes, uRetro);
         vec3 c = texture2D(tDiffuse, uv).rgb;
-        float rs = texture2D(tDiffuse, uv + vec2(1. / uRes.x, 0.)).r;
-        c.r = mix(c.r, rs, .4 * uRetro);
+        vec2 ab = (vUv - .5) * uAberr * 10. / uRes;
+        float rs = texture2D(tDiffuse, uv + vec2(1. / uRes.x, 0.) + ab).r;
+        float bs = texture2D(tDiffuse, uv - ab).b;
+        c.r = mix(c.r, rs, min(1., .4 * uRetro + uAberr));
+        c.b = mix(c.b, bs, min(1., uAberr));
+        c = mix(c, c * uTint, uTintAmt);
         c = srgb(aces(c * uExposure));
-        vec2 q = vUv - .5; c *= 1. - dot(q, q) * 1.25;
+        vec2 q = vUv - .5; c *= clamp(1. - dot(q, q) * (1.25 + uVig * 3.5), 0., 1.);
         c += (h12(px + fract(uTime * 7.3) * vec2(113., 71.)) - .5) * uGrain;
         c = mix(c, vec3(c.r * 1.3 + .08, c.g * .25, c.b * .25), uRed);
         if (uRetro > .5) {
@@ -765,6 +867,7 @@ function resize() {
   const realH = 2 * Math.atan(Math.tan(vFov * Math.PI / 360) * aspect);
   camera.position.z = clamp(0.95 * (Math.tan(hFov / 2) / Math.tan(realH / 2) - 1), 0, 1.6);
   camera.position.y = camera.position.z * 0.35;
+  CAMBASE.z = camera.position.z; CAMBASE.y = camera.position.y; CAMBASE.fov = vFov;
   camera.updateProjectionMatrix();
   $('#rotate').classList.toggle('hidden', !(aspect < 0.9 && G && G.inGame));
 }
@@ -1183,9 +1286,10 @@ function buildWorld() {
   }
 
   // ---------- shotgun ----------
-  W.gun = buildShotgun(); scene.add(W.gun);
+  W.gunRig = new THREE.Group(); scene.add(W.gunRig);
+  W.gun = buildShotgun(); W.gunRig.add(W.gun);
   POSE.gunTable = { pos: V3(-0.03, TABLE_Y + 0.026, 0.1), quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, Math.PI / 2 - 0.16, 0, 'YXZ')) };
-  W.gun.position.copy(POSE.gunTable.pos); W.gun.quaternion.copy(POSE.gunTable.quat);
+  W.gunRig.position.copy(POSE.gunTable.pos); W.gunRig.quaternion.copy(POSE.gunTable.quat);
   W.gun.userData.target = { type: 'gun' };
 
   // ---------- dealer ----------
@@ -1374,9 +1478,11 @@ function buildHand(side) {
   const skin = MAT.skin;
   const palm = mk(sph(0.04, 10, 8), skin, 0, 0.01, 0.005, h); palm.scale.set(0.95, 0.32, 1.1);
   mk(cyl(0.02, 0.026, 0.05, 8), skin, 0, 0.01, -0.05, h).rotation.x = Math.PI / 2;
-  const fingers = [];
+  const fingers = [], segs = [];
+  let cur = null;
   const seg = (parent, len, r, bend) => {
-    const g = new THREE.Group(); g.rotation.x = bend; parent.add(g);
+    const g = new THREE.Group(); g.rotation.x = bend; g.userData.base = bend; parent.add(g);
+    if (cur) cur.push(g);
     mk(cyl(r * 0.85, r, len, 6), skin, 0, 0, len / 2, g).rotation.x = Math.PI / 2;
     mk(sph(r * 1.15, 6, 5), skin, 0, 0, 0, g);
     const tip = new THREE.Group(); tip.position.z = len; g.add(tip);
@@ -1385,14 +1491,16 @@ function buildHand(side) {
   for (let i = 0; i < 4; i++) {
     const f = new THREE.Group(); f.position.set(-0.027 + i * 0.018, 0.01, 0.038); f.rotation.y = (i - 1.5) * -0.12; h.add(f);
     const L = [0.05, 0.058, 0.055, 0.044][i];
+    cur = []; segs.push(cur);
     let t = seg(f, L, 0.0058, 0.25);
     t = seg(t, L * 0.72, 0.005, 0.55);
     seg(t, L * 0.55, 0.0042, 0.5);
     fingers.push(f);
   }
   const th = new THREE.Group(); th.position.set(side * -0.035, 0.006, 0.0); th.rotation.y = side * -0.95; h.add(th);
+  cur = null;
   let t = seg(th, 0.04, 0.0065, 0.2); seg(t, 0.032, 0.0055, 0.45);
-  h.userData.fingers = fingers;
+  h.userData.fingers = fingers; h.userData.segs = segs;
   return h;
 }
 
@@ -1485,22 +1593,37 @@ function setDealerCrushed(on) {
   const D = W.dealer; D.crushed = on; applyDealerModel();
 }
 
-function updateDealerRig(t) {
-  const D = W.dealer;
+function updateDealerRig(t, dt = 0.016) {
+  const D = W.dealer, F = FX.dealer;
+  F.nod.step(dt); F.tilt.step(dt); F.push.step(dt);
   const breathe = Math.sin(t * 1.3) * 0.008;
-  D.body.position.y = breathe + Math.sin(t * 0.45) * 0.01;
-  D.head.rotation.z = Math.sin(t * 0.6) * 0.05;
-  const hp = new THREE.Vector3(); D.head.getWorldPosition(hp);
+  D.body.position.y = breathe + Math.sin(t * 0.45) * 0.012;
+  D.body.position.x = Math.sin(t * 0.31) * 0.01;
+  const hp = D.head.getWorldPosition(new THREE.Vector3());
   const dx = D.look.x - hp.x, dz = D.look.z - hp.z, dy = D.look.y - hp.y;
-  const yaw = Math.atan2(dx, dz), pitch = -Math.atan2(dy, Math.hypot(dx, dz));
-  D.head.rotation.y += (clamp(yaw, -0.7, 0.7) - D.head.rotation.y) * 0.06;
-  D.head.rotation.x += (clamp(pitch, -0.5, 0.6) - D.head.rotation.x) * 0.06;
-  const open = D.talk > 0 ? 0.08 + Math.abs(Math.sin(t * 17)) * 0.22 : 0.05 + Math.sin(t * 0.9) * 0.025;
+  const yaw = clamp(Math.atan2(dx, dz), -0.8, 0.8), pitch = clamp(-Math.atan2(dy, Math.hypot(dx, dz)), -0.55, 0.65);
+  const kk = 1 - Math.pow(0.015, dt);
+  F.lookYaw += (yaw - F.lookYaw) * kk; F.lookPitch += (pitch - F.lookPitch) * kk;
+  F.laugh = Math.max(0, F.laugh - dt);
+  const laughBob = F.laugh > 0 ? Math.sin(t * 19) * 0.07 * Math.min(1, F.laugh) : 0;
+  D.head.rotation.set(F.lookPitch + F.nod.x + laughBob, F.lookYaw, Math.sin(t * 0.6) * 0.05 + F.tilt.x, 'YXZ');
+  D.head.position.z = D.headZ + F.push.x;
+  F.jaw += (F.jawT - F.jaw) * Math.min(1, dt * 8);
+  let open = D.talk > 0 ? 0.08 + Math.abs(Math.sin(t * 17)) * 0.22 : 0.05 + Math.sin(t * 0.9) * 0.025;
+  if (F.laugh > 0) open = 0.12 + Math.abs(Math.sin(t * 21)) * 0.3;
+  open += F.jaw;
   D.jaw.rotation.x += (open - D.jaw.rotation.x) * 0.25;
-  if (D.model && D.model.jaw) { const m = D.model; const tgt = m.jawRest - (D.talk > 0 ? Math.abs(Math.sin(t * 15)) * 0.28 - 0.12 : Math.sin(t * 0.9) * 0.04); m.jaw.rotation.z += (tgt - m.jaw.rotation.z) * 0.25; }
+  if (D.model && D.model.jaw) { const m = D.model; const tgt = m.jawRest + 0.08 - open * 1.3; m.jaw.rotation.z += (tgt - m.jaw.rotation.z) * 0.3; }
   D.hands.forEach((h, i) => {
     h.visible = D.root.visible;
-    if (!G.dealerHolding) h.position.y += Math.sin(t * 1.1 + i * 2) * 0.00004;
+    F.curl[i] += (F.curlT[i] - F.curl[i]) * Math.min(1, dt * 10);
+    const segs = h.userData.segs; if (!segs) return;
+    const idle = !G.dealerGrip[i] && !h.userData.carry && !h.userData.busy;
+    segs.forEach((f, j) => {
+      let tap = 0;
+      if (idle) { const ph = (t * 1.7 + j * 0.37 + i * 1.3) % 3.2; if (ph < 0.3) tap = -Math.sin(ph / 0.3 * Math.PI) * 0.55; }
+      f.forEach((sg, k) => { sg.rotation.x = sg.userData.base + F.curl[i] * [0.55, 0.8, 0.7][k] + (k === 0 ? tap : tap * 0.3); });
+    });
   });
 }
 
@@ -1595,12 +1718,21 @@ function drawDisplay() {
   if (G.cashPot) { g.textAlign = 'right'; g.fillStyle = '#e6c35c'; g.fillText('$' + G.cashPot.toLocaleString('en-US'), w - 14, 22); }
   g.fillStyle = 'rgba(99,226,142,.5)'; g.fillRect(12, 42, w - 24, 3); g.fillRect(w / 2 - 1, 50, 3, h - 62);
   const cols = [['DEALER', G.D, 0], [(G.name || 'YOU'), G.P, 1]];
+  const now = clock.t;
+  W.dispPrev = W.dispPrev || {};
+  cols.forEach(([, p]) => { const pr = W.dispPrev[p.id]; if (pr !== undefined && pr !== p.hp) { W.dispAnim = W.dispAnim || {}; W.dispAnim[p.id] = { from: pr, to: p.hp, t0: now }; W.dispAnimUntil = now + 1.2; } W.dispPrev[p.id] = p.hp; });
+  if (W.dispGlitch > 0) { g.save(); g.translate(rand(-8, 8), rand(-4, 4)); }
   cols.forEach(([name, p, c]) => {
     const x0 = c * w / 2 + 14, cw = w / 2 - 28;
     g.textAlign = 'left'; g.font = 'bold 44px monospace'; g.fillStyle = col; g.fillText(name, x0, 82);
     const cutBlink = p.cut && Math.floor(t * 3) % 2 === 0;
     const max = Math.max(p.max, p.hp), size = max > 5 ? 44 : 56, gap = Math.min(size * 0.72, (cw - size) / Math.max(1, max - 1));
-    for (let i = 0; i < max; i++) drawBolt(g, x0 + i * gap, 120, size, i < p.hp, p.cut ? (cutBlink ? '#ff4a3a' : '#a02a20') : col);
+    const an = W.dispAnim && W.dispAnim[p.id], blinkOn = Math.floor((now - (an ? an.t0 : 0)) * 8) % 2 === 0;
+    for (let i = 0; i < max; i++) {
+      let on = i < p.hp, cc = p.cut ? (cutBlink ? '#ff4a3a' : '#a02a20') : col;
+      if (an && now - an.t0 < 1.2 && i >= Math.min(an.from, an.to) && i < Math.max(an.from, an.to)) { on = blinkOn; cc = an.to < an.from ? '#ff6b5e' : '#ffffff'; }
+      drawBolt(g, x0 + i * gap, 120, size, on, cc);
+    }
     const tags = [];
     if (p.cut) tags.push('CUT'); if (p.cuff === 2) tags.push('CUFFED'); if (p.taped) tags.push('TAPED'); if (p.vest) tags.push('VEST'); if (p.mirror) tags.push('MIRROR');
     if (p.battery) tags.push('BATT'); if (p.voodoo) tags.push('VOODOO'); if (p.energy) tags.push('WIRED'); if (p.poison) tags.push('POISON'); if (p.pills) tags.push('PILLS');
@@ -1609,6 +1741,7 @@ function drawDisplay() {
   const gt = [];
   if (G.gun.saw) gt.push('SAWED'); if (G.gun.powder) gt.push('POWDER'); if (G.gun.burst) gt.push('x2');
   if (gt.length) { g.textAlign = 'center'; g.font = 'bold 22px monospace'; g.fillStyle = '#ff6b5e'; g.fillText(gt.join(' '), w / 2, 244); }
+  if (W.dispGlitch > 0) { g.restore(); for (let i = 0; i < 6; i++) { g.fillStyle = `rgba(99,226,142,${rand(0.1, 0.5)})`; g.fillRect(0, rand(0, h), w, rand(2, 10)); } }
   g.fillStyle = 'rgba(0,0,0,.28)'; for (let y = 0; y < h; y += 4) g.fillRect(0, y, w, 2);
   W.dispTex.needsUpdate = true;
 }
@@ -1841,8 +1974,10 @@ const MODELS = {
   coin() {
     const g = G0();
     const face = canvasTex(128, 128, (c, w, h) => { c.fillStyle = '#c9a54a'; c.fillRect(0, 0, w, h); c.strokeStyle = '#7a5f22'; c.lineWidth = 6; c.beginPath(); c.arc(64, 64, 56, 0, 7); c.stroke(); txt(c, '☠', 64, 66, 60, '#7a5f22'); grain(c, w, h, 20); });
+    const back = canvasTex(128, 128, (c, w, h) => { c.fillStyle = '#b8923e'; c.fillRect(0, 0, w, h); c.strokeStyle = '#6a4f1a'; c.lineWidth = 6; c.beginPath(); c.arc(64, 64, 56, 0, 7); c.stroke(); c.lineWidth = 10; c.beginPath(); c.moveTo(38, 38); c.lineTo(90, 90); c.moveTo(90, 38); c.lineTo(38, 90); c.stroke(); grain(c, w, h, 20); });
     const coinM = std({ color: 0xffffff, map: face, roughness: 0.3, metalness: 1, envMap: envTex });
-    place(new THREE.Mesh(cyl(0.032, 0.032, 0.006, 28), [im('goldEdge', { color: 0xb8923e, roughness: 0.3, metalness: 1, envMap: envTex }), coinM, coinM]), 0, 0.003, 0, g);
+    const tailM = std({ color: 0xffffff, map: back, roughness: 0.3, metalness: 1, envMap: envTex });
+    place(new THREE.Mesh(cyl(0.032, 0.032, 0.006, 28), [im('goldEdge', { color: 0xb8923e, roughness: 0.3, metalness: 1, envMap: envTex }), coinM, tailM]), 0, 0.003, 0, g);
     return g;
   },
   dice() {
@@ -2036,7 +2171,7 @@ const ITEMS = {
   cig: {
     name: 'CIGARETTE PACK', pool: 'classic', desc: 'TAKES THE EDGE OFF. REGAIN 1 CHARGE.',
     async use(u, c) {
-      S.cig(); await wait(900); smokePuff(usePoint(u), 14, 0.03); await wait(900);
+      S.cig(); await wait(1800);
       if (isP(u)) G.stats.cigs++;
       await heal(u, 1);
     },
@@ -2050,7 +2185,7 @@ const ITEMS = {
     can: () => G.gun.saw ? 'THE BARREL IS ALREADY SAWED OFF.' : null,
     async use(u) {
       S.saw();
-      for (let i = 0; i < 5; i++) { sparks(W.gun.userData.muzzle.getWorldPosition(V3()), 6); await wait(200); }
+      await wait(1250);
       G.gun.saw = true; setSawed(true); drawDisplay();
       msg('THE SHOTGUN NOW DEALS 2 DAMAGE.', 'live', 1800);
     },
@@ -2091,8 +2226,11 @@ const ITEMS = {
       if (slot < 0) { msg('TOO SLOW.', 'dimt', 1400); return; }
       const o = opp(u), it = o.items[slot]; o.items[slot] = null;
       msg(`${isP(u) ? 'YOU STOLE' : 'THE DEALER STOLE'} ${ITEMS[it.id].name}.`, 'gold', 1600);
-      await presentItem(u, it.obj);
-      try { await ITEMS[it.id].use(u, { obj: it.obj, stolen: true }); } catch (e) { console.error('stolen item failed:', it.id, e); }
+      await presentItemFx(u, it.obj);
+      const sc = { obj: it.obj, stolen: true, rnd: Math.random() };
+      const an = playItemAnim(u, it.obj, it.id, sc);
+      try { await ITEMS[it.id].use(u, sc); } catch (e) { console.error('stolen item failed:', it.id, e); }
+      await an;
       await discardObj(it.obj);
     },
   },
@@ -2158,17 +2296,17 @@ const ITEMS = {
   },
   coin: {
     name: 'LUCKY COIN', pool: 'new', desc: 'FLIP IT. HEADS: THE OPPONENT LOSES 1 CHARGE. TAILS: YOU DO.',
-    async use(u) {
+    async use(u, c) {
       S.coin(); await wait(1500);
-      if (Math.random() < 0.5) { msg('HEADS.', 'good', 1400); await wait(400); await hurt(opp(u), 1, 'item'); }
+      if ((c && c.rnd !== undefined ? c.rnd : Math.random()) < 0.5) { msg('HEADS.', 'good', 1400); await wait(400); await hurt(opp(u), 1, 'item'); }
       else { msg('TAILS.', 'live', 1400); await wait(400); await hurt(u, 1, 'item'); }
     },
   },
   dice: {
     name: "DEVIL'S DIE", pool: 'new', desc: 'ROLL IT. 1: LOSE A CHARGE · 2: SHUFFLE · 3: SEE SHELL · 4: 2 ITEMS · 5: SAW · 6: +2 CHARGES.',
-    async use(u) {
-      S.dice(); await wait(900);
-      const r = randi(1, 6);
+    async use(u, c) {
+      S.dice(); await wait(1000);
+      const r = 1 + Math.floor((c && c.rnd !== undefined ? c.rnd : Math.random()) * 6);
       msg(`${isP(u) ? 'YOU' : 'THE DEALER'} ROLLED A ${r}.`, r === 1 ? 'live' : r === 6 ? 'good' : 'gold', 1500); await wait(1100);
       if (r === 1) await hurt(u, 1, 'item');
       else if (r === 2) await shuffleShells();
@@ -2232,7 +2370,7 @@ const ITEMS = {
   },
   cigar: {
     name: 'CUBAN CIGAR', pool: 'new', desc: 'THE GOOD STUFF. REGAIN 2 CHARGES.',
-    async use(u) { S.cig(); await wait(900); smokePuff(usePoint(u), 22, 0.04); await wait(900); if (isP(u)) G.stats.cigs++; await heal(u, 2); },
+    async use(u) { S.cig(); await wait(1800); if (isP(u)) G.stats.cigs++; await heal(u, 2); },
   },
   pills: {
     name: 'PAINKILLERS', pool: 'new', desc: 'REGAIN 1 CHARGE NOW AND 1 MORE AT THE START OF YOUR NEXT TURN.',
@@ -2358,11 +2496,14 @@ async function arcTo(obj, to, ms = 500, h = 0.12) {
   await tween(ms, k => { obj.position.lerpVectors(from, to, k); obj.position.y += Math.sin(k * Math.PI) * h; });
 }
 async function discardObj(obj, fall = false) {
-  if (!obj || obj.userData.discarding) return;
+  if (!obj || obj.userData.discarding || obj.userData.tossed) return;
   obj.userData.discarding = true;
-  obj.userData.target = null;
+  obj.userData.target = null; obj.userData.float = false;
+  if (!obj.visible) { scene.remove(obj); disposeObj(obj); return; }
   if (fall) await animPos(obj, obj.position.clone().add(V3(0, -0.03, 0)), 120);
-  await animScale(obj, 0.001, 260, ease.in);
+  smokePuff(obj.position.clone(), 4, 0.02);
+  const r0 = obj.rotation.y;
+  await tween(280, k => { obj.scale.setScalar(Math.max(0.001, 1 - k)); obj.rotation.y = r0 + k * 3; }, ease.inBack);
   scene.remove(obj); disposeObj(obj);
 }
 function clearTable() {
@@ -2373,37 +2514,13 @@ function setSawed(on, instant = false) {
   if (instant) { b.scale.x = to; return; }
   tween(on ? 250 : 600, k => { b.scale.x = from + (to - from) * k; });
 }
-function pumpAnim() {
-  const p = W.gun.userData.pump;
-  tween(260, k => { p.position.x = 0.3 - Math.sin(k * Math.PI) * 0.07; }, ease.linear);
-}
 function pkRemove(s) { G.pk[s.live ? 'live' : 'blank'] = Math.max(0, G.pk[s.live ? 'live' : 'blank'] - 1); }
 
 // ---------- dealer hands ----------
-async function dealerHand(i, pos, ms = 450) {
-  const h = W.dealer.hands[i];
-  await animPos(h, pos.clone().add(V3(0, 0.01, -0.05)), ms);
-}
-function dealerHandsRest(ms = 450) { return Promise.all(W.dealer.hands.map((h, i) => animPos(h, W.dealer.rest[i], ms))); }
+async function dealerHand(i, pos, ms = 450) { await dealerHandTo(i, pos.clone().add(V3(0, 0.01, -0.03)), ms, { curl: 0.8 }); }
+function dealerHandsRest(ms = 450) { return dealerHandsHome(ms); }
 
 // ---------- presenting / using items ----------
-async function presentItem(u, obj) {
-  obj.userData.target = null;
-  if (!isP(u)) {
-    const hi = obj.position.x < 0 ? 0 : 1;
-    await dealerHand(hi, obj.position, 380);
-    S.pickup();
-    const hp = W.dealer.hands[hi];
-    const off = hp.position.clone().sub(obj.position);
-    const to = usePoint(u), from = obj.position.clone();
-    const rx = obj.rotation.x;
-    await tween(500, k => { obj.position.lerpVectors(from, to, k); hp.position.copy(obj.position).add(off); obj.rotation.x = rx + 0.6 * k; });
-    return;
-  }
-  S.pickup();
-  const to = usePoint(u), rx = obj.rotation.x;
-  await Promise.all([arcTo(obj, to, 450, 0.05), tween(450, k => { obj.rotation.x = rx + 1.0 * k; })]);
-}
 async function useItemFromSlot(u, slot) {
   const it = u.items[slot]; if (!it) return;
   const def = ITEMS[it.id];
@@ -2411,12 +2528,14 @@ async function useItemFromSlot(u, slot) {
   hideTooltip();
   if (isP(u)) G.stats.items++;
   else msg(`DEALER USES: ${def.name}`, 'dimt', 1600);
-  await presentItem(u, it.obj);
-  if (it.id === 'adrenaline' || it.id === 'cutters' || it.id === 'magnet') discardObj(it.obj);
-  try { await def.use(u, { obj: it.obj }); }
+  await presentItemFx(u, it.obj);
+  const ctx = { obj: it.obj, rnd: Math.random() };
+  const anim = playItemAnim(u, it.obj, it.id, ctx);
+  try { await def.use(u, ctx); }
   catch (e) { console.error('item failed:', it.id, e); }
+  await anim;
   await discardObj(it.obj);
-  if (!isP(u)) dealerHandsRest(400);
+  if (!isP(u)) await dealerHandsHome(400);
   drawDisplay(); updateHud();
 }
 
@@ -2450,31 +2569,17 @@ async function reveal(u, idx, show = true) {
 }
 function peekShell(live) {
   const s = shellObj(live ? 'live' : 'blank');
-  const p = W.gun.position.clone().add(V3(0.1, 0.05, 0.1)); s.position.copy(p); s.scale.setScalar(1.4); scene.add(s);
+  const p = W.gunRig.position.clone().add(V3(0.08, 0.06, 0.08)); s.position.copy(p); s.scale.setScalar(1.4); scene.add(s);
+  const gl = sprite(p, live ? 0xff4030 : 0x4f86d8, 0.08); wait(1500).then(() => scene.remove(gl));
   animPos(s, p.clone().add(V3(0, 0.12, 0.05)), 500, ease.out);
   tween(900, k => { s.rotation.y = k * 4; }, ease.linear);
   wait(1700).then(() => animScale(s, 0.001, 250)).then(() => scene.remove(s));
-}
-function ejectVisual(live, delay = 0) {
-  const s = shellObj(live ? 'live' : 'blank');
-  const mz = W.gun.localToWorld(V3(0.04, 0.03, 0.03));
-  s.position.copy(mz); scene.add(s);
-  const dir = V3(rand(-0.25, 0.25), 0, rand(0.1, 0.3));
-  const land = V3(clamp(mz.x + 0.08 + Math.abs(dir.x), 0.1, 0.34), TABLE_Y + 0.013, clamp(mz.z + dir.z - 0.3, -0.34, -0.1));
-  wait(delay * 1000).then(async () => {
-    S.shellDrop(0.25);
-    const from = s.position.clone();
-    await tween(420, k => { s.position.lerpVectors(from, land, k); s.position.y += Math.sin(k * Math.PI) * 0.18; s.rotation.x = k * 5; s.rotation.z = Math.PI / 2 * k; }, ease.linear);
-    s.rotation.set(0, rand(0, 3), Math.PI / 2);
-    await wait(2500); await animScale(s, 0.001, 300); scene.remove(s);
-  });
 }
 async function ejectShells(u, count) {
   for (let i = 0; i < count && G.shells.length; i++) {
     const s = G.shells.shift(); pkRemove(s);
     if (isP(u)) G.stats.ejected++;
-    S.rack(); pumpAnim(); await wait(260);
-    ejectVisual(s.live);
+    await rackAnim([s.live]);
     msg(s.live ? 'A LIVE ROUND WAS EJECTED.' : 'A BLANK WAS EJECTED.', s.live ? 'live' : 'blank', 1600);
     await wait(1000);
   }
@@ -2498,12 +2603,12 @@ async function insertShell(live) {
   const idx = randi(0, G.shells.length);
   G.shells.splice(idx, 0, { live, seenP: false, seenD: false });
   G.pk[live ? 'live' : 'blank']++;
-  S.load(); await wait(350); S.rack(); pumpAnim();
+  S.load(); await wait(350); await rackAnim([]);
   msg(`AN EXTRA ${live ? 'LIVE ROUND' : 'BLANK'} WAS SLIPPED IN.`, live ? 'live' : 'blank', 1600);
   await wait(900); updateHud();
 }
 async function shuffleShells() {
-  S.dice(); S.rack(0.5); pumpAnim();
+  S.dice(); wait(400).then(() => rackAnim([]));
   shuffle(G.shells); G.shells.forEach(s => { s.seenP = false; s.seenD = false; });
   msg('THE SHELLS HAVE BEEN SHUFFLED.', 'gold', 1500);
   await wait(1200); updateHud();
@@ -2523,8 +2628,8 @@ async function hurt(u, n, source = 'shot') {
   if (n <= 0 || u.hp <= 0) return;
   u.hp = Math.max(0, u.hp - n);
   if (source !== 'shot') {
-    if (isP(u)) { post.red = 0.7; animVal(post, 'red', 0, 900); shake(0.6); }
-    else dealerFlinch();
+    if (isP(u)) { post.red = 0.7; animVal(post, 'red', 0, 900); shake(0.6); FX.cam.kick.kick(1.2); FX.cam.roll.kick(rand(-1, 1)); FX.aberr = 0.8; }
+    else dealerReact('flinch');
     SND.tone({ type: 'sine', f: 90, f1: 40, dur: 0.3, vol: 0.5 });
   }
   if (u.hp === 0 && u.battery) {
@@ -2533,10 +2638,10 @@ async function hurt(u, n, source = 'shot') {
   }
   if (u.voodoo) {
     u.voodoo = false; const o = opp(u);
-    if (o.hp > 1) { o.hp = Math.max(1, o.hp - n); msg('THE VOODOO DOLL SHARES THE PAIN.', 'gold', 1800); S.bad(); if (isP(o)) { post.red = 0.6; animVal(post, 'red', 0, 800); } else dealerFlinch(); }
+    if (o.hp > 1) { o.hp = Math.max(1, o.hp - n); msg('THE VOODOO DOLL SHARES THE PAIN.', 'gold', 1800); S.bad(); if (isP(o)) { post.red = 0.6; animVal(post, 'red', 0, 800); FX.cam.kick.kick(1); } else dealerReact('flinch'); }
   }
   if (u.hp === 0 && source !== 'shot') {
-    if (isP(u)) { post.flash = 1; animVal(post, 'flash', 0, 300); SND.setMuffle(true, 0.3); await fadeTo(1, 400); }
+    if (isP(u)) { await playerHitFx(); }
     else await dealerVanish();
   }
   for (const p of [G.P, G.D]) {
@@ -2568,7 +2673,7 @@ function passTurn(from) {
 function gunPosePlayerHold() { const pos = camWorld(V3(0.14, -0.2, -0.5)); return { pos, quat: quatFromX(V3(0, TABLE_Y + 0.1, -0.5).sub(pos)) }; }
 function gunPosePlayerAimDealer() { const pos = camWorld(V3(0.06, -0.12, -0.3)); const h = W.dealer.head.getWorldPosition(V3()); return { pos, quat: quatFromX(h.sub(pos)) }; }
 function gunPosePlayerSelf() { const cp = camPos(); const pos = camWorld(V3(0.0, -0.05, -0.76)); return { pos, quat: quatFromX(cp.sub(pos).add(V3(0, 0.02, 0))) }; }
-function gunPoseDealerAimPlayer() { const pos = V3(0.1, 1.18, -1.12); const cp = camPos().add(V3(0, -0.05, 0)); return { pos, quat: quatFromX(cp.sub(pos)) }; }
+function gunPoseDealerAimPlayer() { const pos = V3(0.06, 1.2, -0.82); const cp = camPos().add(V3(0, -0.05, 0)); return { pos, quat: quatFromX(cp.sub(pos)) }; }
 function gunPoseDealerSelf() { const h = W.dealer.head.getWorldPosition(V3()); const pos = h.clone().add(V3(0.03, -0.12, 0.8)); return { pos, quat: quatFromX(h.sub(pos)) }; }
 
 function shake(a) { if (OPT.shake) swayObj.shake = Math.max(swayObj.shake, a); }
@@ -2578,42 +2683,11 @@ function muzzleFlash() {
   W.flashSprite.position.copy(m); W.flashSprite.material.opacity = 1; W.flashSprite.material.rotation = rand(0, 6);
   smokePuff(m, 12, 0.02); sparks(m, 10);
 }
-function dealerFlinch() {
-  const h = W.dealer.head;
-  const z0 = W.dealer.headZ;
-  tween(140, k => { h.position.z = z0 - 0.06 * k; }).then(() => tween(400, k => { h.position.z = z0 - 0.06 + 0.06 * k; }));
-}
-async function dealerVanish() {
-  const d = W.dealer;
-  const h = d.head, b = d.root;
-  const crushModel = d.model && OPT.dealerModel !== 'procedural';
-  if (crushModel) setDealerCrushed(true);
-  await tween(90, k => { h.rotation.x = -0.9 * k; b.position.z = d.baseZ - 0.15 * k; h.scale.set(1 + 0.18 * k, 1 - 0.22 * k, 1 + 0.1 * k); });
-  if (crushModel) { await tween(500, k => { h.rotation.x = -0.9 + 0.5 * k; h.scale.set(1.18 - 0.1 * k, 0.78 + 0.08 * k, 1.1 - 0.05 * k); }); await wait(350); }
-  b.visible = false; b.position.z = d.baseZ; h.rotation.x = 0; h.scale.set(1, 1, 1); d.gone = true;
-  setDealerCrushed(false);
-}
-async function dealerReturn() {
-  const d = W.dealer; if (!d.gone) return;
-  S.zap(); await wait(1150);
-  G.lampFlicker = 0.4;
-  setDealerCrushed(false);
-  d.root.visible = true; d.gone = false;
-}
-async function playerHitStart() {
-  post.flash = 1; shake(1.2);
-  await tween(250, k => { post.flash = 1 - k; });
-  await fadeTo(1, 220);
-  SND.setMuffle(true, 0.3);
-  await wait(500);
-}
-async function playerRecover() {
-  S.heart(0, 0.8); await wait(1300);
-  S.zap(); await wait(1150);
-  post.flash = 0.8; animVal(post, 'flash', 0, 500);
-  SND.setMuffle(false, 1.5);
-  await fadeTo(0, 700);
-}
+function dealerFlinch() { dealerReact('flinch'); }
+function dealerVanish() { return dealerVanishFx(); }
+function dealerReturn() { return dealerReturnFx(); }
+function playerHitStart() { return playerHitFx(); }
+function playerRecover() { return playerRecoverFx(); }
 
 async function fire(shooter, target) {
   const n = G.gun.burst ? Math.min(2, G.shells.length) : 1;
@@ -2625,30 +2699,35 @@ async function fire(shooter, target) {
   const wasSaw = G.gun.saw;
   G.gun.saw = false; G.gun.powder = false; G.gun.burst = false;
   const selfShot = target === shooter;
+  fireFx(isP(shooter), lives > 0, isP(target));
   if (lives) {
     S.shot(); muzzleFlash(); shake(0.8); G.lampFlicker = 0.5;
-    if (n > 1) { await wait(90); S.shot(); }
+    if (n > 1) { await wait(90); S.shot(); fireFx(isP(shooter), true, isP(target)); }
     // who actually gets hit (mirror reflects, vest absorbs)
     const victim = (!selfShot && target.mirror) ? shooter : target;
     const absorbed = victim.vest;
     if (isP(victim) && !absorbed) {
-      await playerHitStart();
+      await playerHitFx();
       await applyShot(shooter, target, dmg);
-      if (G.P.hp > 0) await playerRecover();
+      if (G.P.hp > 0) { await playerRecoverFx(); if (!isP(shooter)) dealerReact('laugh'); }
     } else {
-      if (isP(victim)) { post.flash = 0.6; animVal(post, 'flash', 0, 400); }
-      else if (!absorbed) { dealerVanish(); await wait(W.dealer.model && OPT.dealerModel !== 'procedural' ? 900 : 500); }
+      if (isP(victim)) { post.flash = 0.6; animVal(post, 'flash', 0, 400); FX.cam.kick.kick(1.5); }
+      else if (!absorbed) { dealerVanishFx(); await wait(W.dealer.model && OPT.dealerModel !== 'procedural' ? 900 : 550); }
       await applyShot(shooter, target, dmg);
     }
   } else {
     S.click(); await wait(300);
     msg(fired.length > 1 ? 'TWO BLANKS.' : 'BLANK.', 'blank', 1100);
+    if (selfShot && isP(shooter)) { calmPlayer(); S.exhale && S.exhale(); dealerReact('tilt'); }
+    else if (selfShot) dealerReact('laugh');
+    else if (isP(shooter)) dealerReact('laugh');
+    else dealerReact('tilt');
   }
-  await wait(lives ? 700 : 500);
+  await wait(lives ? 650 : 450);
   if (wasSaw) setSawed(false);
-  S.rack(); pumpAnim(); fired.forEach((s, i) => ejectVisual(s.live, i * 0.18));
-  await wait(500);
-  if (W.dealer.gone && G.D.hp > 0) await dealerReturn();
+  await rackAnim(fired.map(s => s.live));
+  await wait(350);
+  if (W.dealer.gone && G.D.hp > 0) await dealerReturnFx();
   const keep = (selfShot && lives === 0) || (!selfShot && lives === 0 && shooter.energy);
   if (!selfShot && shooter.energy) { shooter.energy = false; if (lives === 0) msg('THE ENERGY DRINK KEEPS YOU GOING. TURN KEPT.', 'gold', 1600); }
   if (!keep) passTurn(shooter);
@@ -2694,16 +2773,15 @@ async function playerTurn() {
   G.playerTurn = false;
 }
 async function playerShoot() {
-  S.pickup(); swayObj.enabled = false;
-  await animPose(W.gun, gunPosePlayerHold(), 500);
+  await playerPickupGun();
   showAim(true);
   const r = await waitInput(['aim']);
   showAim(false);
   const self = r.target === 'self';
-  await animPose(W.gun, self ? gunPosePlayerSelf() : gunPosePlayerAimDealer(), self ? 700 : 420);
-  await wait(self ? 900 : 400);
+  await playerAim(self);
   await fire(G.P, self ? G.P : G.D);
-  await animPose(W.gun, POSE.gunTable, 550);
+  calmPlayer();
+  await gunToTable(560);
   swayObj.enabled = true;
 }
 
@@ -2844,18 +2922,12 @@ async function dealerTurn() {
   setPrompt('');
 }
 async function dealerShoot(target) {
-  const d = W.dealer;
-  await Promise.all([dealerHand(0, W.gun.localToWorld(V3(0.36, 0, 0)), 450), dealerHand(1, W.gun.localToWorld(V3(0.5, 0, 0)), 450)]);
-  S.pickup(); G.dealerHolding = true;
   const toPlayer = target === 'player';
-  d.look.copy(toPlayer ? camPos() : V3(0, TABLE_Y, 0.4));
-  await animPose(W.gun, toPlayer ? gunPoseDealerAimPlayer() : gunPoseDealerSelf(), toPlayer ? 800 : 900);
-  await wait(toPlayer ? 1100 : 900);
+  await dealerPickupGun();
+  await dealerAim(toPlayer);
   await fire(G.D, toPlayer ? G.P : G.D);
-  if (!dead()) await animPose(W.gun, POSE.gunTable, 650);
-  else { W.gun.position.copy(POSE.gunTable.pos); W.gun.quaternion.copy(POSE.gunTable.quat); }
-  G.dealerHolding = false;
-  await dealerHandsRest(450);
+  if (dead()) { W.gunRig.position.copy(POSE.gunTable.pos); W.gunRig.quaternion.copy(POSE.gunTable.quat); setGrip(false, false); calmPlayer(); await dealerHandsHome(300); return; }
+  await dealerPutDownGun();
 }
 
 // =====================================================================
@@ -2876,7 +2948,7 @@ function setupRound() {
   clearTable();
   G.shells = []; G.gun = { saw: false, powder: false, burst: false }; setSawed(false, true);
   G.loadIdx = 0; G.roundItems = cfg.items; W.grid.visible = cfg.items !== 0;
-  W.gun.position.copy(POSE.gunTable.pos); W.gun.quaternion.copy(POSE.gunTable.quat);
+  W.gunRig.position.copy(POSE.gunTable.pos); W.gunRig.quaternion.copy(POSE.gunTable.quat); FX.gun.pump = 0; FX.gun.sway = 0;
   W.dealer.root.visible = true; W.dealer.gone = false;
   drawDisplay(); updateHud();
 }
@@ -2902,33 +2974,34 @@ async function roundIntro() {
 }
 async function distributeItems(n) {
   const D = G.D, P = G.P;
-  W.boxD.visible = true; W.boxD.position.set(0, TABLE_Y, -0.8); W.boxD.userData.lid.rotation.x = 0;
   const dealerTask = (async () => {
-    await wait(600); S.box(); tween(300, k => { W.boxD.userData.lid.rotation.x = -1.9 * k; });
+    await wait(300);
+    await boxIn(W.boxD, -0.8, false);
+    await boxOpen(W.boxD);
     for (let i = 0; i < n; i++) {
       const free = D.items.indexOf(null); if (free < 0) break;
       const id = randomItemId();
-      const o = spawnItemObj(id, W.boxD.position.clone().add(V3(0, 0.05, 0)));
+      const o = spawnItemObj(id, W.boxD.position.clone());
+      await itemFromBox(o, W.boxD, W.boxD.position.clone().add(V3(0, 0.22, 0.05)), qAxis(V3(1, 0, 0), -0.4));
       D.items[free] = { id, obj: o };
-      await arcTo(o, SLOT_POS.dealer[free], 520, 0.15); S.place(); setItemTarget(D, free);
-      await wait(250);
+      await placeItem(o, SLOT_POS.dealer[free]); setItemTarget(D, free);
+      await wait(150);
     }
+    await boxOut(W.boxD, false);
   })();
-  // player box
-  const bx = W.boxP; bx.visible = true; bx.userData.lid.rotation.x = 0;
-  bx.position.set(0, TABLE_Y, 1.2); bx.scale.setScalar(1);
-  S.thud(); await animPos(bx, V3(0, TABLE_Y, 0.8), 450, ease.out);
+  const bx = W.boxP;
+  await boxIn(bx, 0.8, true);
   await animPose(camRig, POSE.table, 500);
   setPrompt('OPEN THE ITEM BOX');
   await waitInput(['box']);
-  S.box(); await tween(300, k => { bx.userData.lid.rotation.x = -1.9 * k; });
+  await boxOpen(bx);
   for (let i = 0; i < n; i++) {
     const id = randomItemId();
-    const o = spawnItemObj(id, bx.position.clone().add(V3(0, 0.03, 0)));
-    await animPos(o, camWorld(V3(0, -0.07, -0.36)), 380, ease.out);
+    const o = spawnItemObj(id, bx.position.clone());
+    await itemFromBox(o, bx, camWorld(V3(0, -0.07, -0.36)), tipQuat(G.P, 0.7));
     showTooltip(id, false);
     const free = P.items.map((x, j) => x ? -1 : j).filter(j => j >= 0);
-    if (!free.length) { msg('NO ROOM ON THE TABLE.', 'dimt', 1200); await wait(900); await discardObj(o); continue; }
+    if (!free.length) { msg('NO ROOM ON THE TABLE.', 'dimt', 1200); await wait(900); o.userData.float = false; await discardObj(o); continue; }
     let slot = free[0];
     if (!OPT.autoPlace) {
       free.forEach(j => { const m = W.slotMarkers.player[j]; m.visible = true; m.material.opacity = 0.22; });
@@ -2938,40 +3011,17 @@ async function distributeItems(n) {
       W.slotMarkers.player.forEach(m => { m.visible = false; m.material.opacity = 0; });
     } else await wait(350);
     P.items[slot] = { id, obj: o };
-    await arcTo(o, SLOT_POS.player[slot], 380, 0.06); S.place(); setItemTarget(P, slot);
+    await placeItem(o, SLOT_POS.player[slot]); setItemTarget(P, slot);
   }
   hideTooltip(); setPrompt('');
-  await animScale(bx, 0.001, 250);
-  bx.visible = false; bx.scale.setScalar(1);
+  await boxOut(bx, true);
   await dealerTask;
-  await animScale(W.boxD, 0.001, 250); W.boxD.visible = false; W.boxD.scale.setScalar(1);
   await animPose(camRig, POSE.seat, 500);
 }
 async function showShells(shown) {
-  const n = shown.length, objs = [];
-  shown.forEach((live, i) => {
-    const s = shellObj(live ? 'live' : 'blank');
-    const c0 = Math.floor((8 - n) / 2);
-    s.position.set(SHELL_ZONE.x0 + SHELL_ZONE.cell * (c0 + i + 0.5), TABLE_Y, SHELL_ZONE.z); s.scale.setScalar(0.001); scene.add(s); objs.push(s);
-  });
-  W.dealer.look.set(0, TABLE_Y, 0.2);
-  S.shellDrop();
-  for (const s of objs) { animScale(s, 1.25, 220, ease.back); await wait(70); }
-  const lv = shown.filter(Boolean).length, bl = n - lv;
-  msg(`<span class="live">${lv} LIVE ROUND${lv !== 1 ? 'S' : ''}.</span> <span class="blank">${bl} BLANK${bl !== 1 ? 'S' : ''}.</span>`, '', 2600, true);
-  await wait(2400);
-  await dealerHand(1, V3(0.34, TABLE_Y, -0.08), 400);
-  await Promise.all(objs.map(s => animPos(s, V3(0.34 + (s.position.x - 0.34) * 0.3, TABLE_Y + 0.02, -0.75), 420, ease.in)));
-  objs.forEach(o => scene.remove(o));
-  await Promise.all([dealerHand(0, W.gun.localToWorld(V3(0.34, 0, 0)), 350), dealerHand(1, W.gun.localToWorld(V3(0.52, 0, 0)), 350)]);
-  if (G.mode === 'story' && G.round === 1 && G.loadIdx === 0 && !G.seenLines.insert) {
-    G.seenLines.insert = true;
-    say('I INSERT THE SHELLS IN AN UNKNOWN ORDER.', { hold: 900 });
-  }
-  for (let i = 0; i < n; i++) { S.load(); W.gun.position.y = POSE.gunTable.pos.y + 0.004; await wait(90); W.gun.position.y = POSE.gunTable.pos.y; await wait(190); }
-  S.rack(); pumpAnim(); await wait(500);
-  await dealerHandsRest(400);
-  W.dealer.look.copy(camPos());
+  const first = G.mode === 'story' && G.round === 1 && G.loadIdx === 0 && !G.seenLines.insert;
+  if (first) G.seenLines.insert = true;
+  await showShellsFx(shown, first);
   updateHud();
 }
 async function newLoad() {
@@ -3020,6 +3070,7 @@ async function revivePlayer() {
   SND.setMuffle(false, 1.5);
   await roundCleanup();
   camRig.position.copy(POSE.seat.pos); camRig.quaternion.copy(POSE.seat.quat);
+  Object.assign(FX.cam, { leanY: 0, leanPitch: 0, leanRoll: 0 }); calmPlayer(); S.gasp(); FX.cam.kick.kick(-1.6);
   await fadeTo(0, 900);
   W.dealer.look.copy(camPos());
   await say('...', { hold: 700, speed: 300 });
@@ -3030,10 +3081,9 @@ async function dealerDown() {
   G.displayOn = false; drawDisplay();
   await roundCleanup();
   await wait(700);
-  S.zap(); await wait(1150);
-  G.lampFlicker = 0.8;
-  W.dealer.root.visible = true; W.dealer.gone = false;
-  await wait(600);
+  W.dealer.gone = true; W.dealer.root.visible = false;
+  await dealerReturnFx();
+  await wait(400);
 }
 async function playRounds() {
   while (true) {
@@ -3073,17 +3123,19 @@ function hideChoice() { $('#choice').classList.add('hidden'); if (G.inGame) $('#
 async function victory() {
   G.displayOn = false; drawDisplay();
   await wait(1200);
-  S.zap(); await wait(1150); W.dealer.root.visible = true; W.dealer.gone = false; G.lampFlicker = 0.6;
+  W.dealer.gone = true; W.dealer.root.visible = false;
+  await dealerReturnFx();
   G.cashPot = G.cashPot ? G.cashPot * 2 : 70000;
   W.dealer.look.copy(camPos());
   await say(G.sets ? 'YOU WIN AGAIN.' : 'CONGRATULATIONS.', { hold: 900 });
   // briefcase slides in and opens
   const bc = W.case; bc.visible = true; bc.position.set(0, TABLE_Y, -0.9); bc.userData.lid.rotation.x = 0;
-  S.thud(); await animPos(bc, V3(0, TABLE_Y, 0.72), 1000, ease.out);
+  S.whoosh(); await moveTo(bc, V3(0, TABLE_Y, 0.72), 1000, { lift: 0.12, e: ease.outQuart });
+  S.thud(0, 0.4); squash(bc, 0.15, 350);
   await animPose(camRig, POSE.caseLook, 700);
   S.latch(); await wait(400);
-  await tween(800, k => { bc.userData.lid.rotation.x = -1.75 * k; }, ease.out);
-  S.cash();
+  await tween(900, k => { bc.userData.lid.rotation.x = -1.75 * k; }, ease.outBack);
+  S.cash(); burst(bc.position.clone().add(V3(0, 0.12, 0)), 0xe6c35c, 30, 0.5, 0.014); dealerReact('laugh');
   await wait(700);
   showChoice('$' + G.cashPot.toLocaleString('en-US'), 'TAKE THE MONEY AND WALK OUT...\nOR GO DOUBLE OR NOTHING?', '', [
     { label: 'TAKE THE MONEY', value: 0 }, { label: 'DOUBLE OR NOTHING', value: 1, red: true },
@@ -3121,6 +3173,906 @@ async function gameOver() {
   hideChoice();
   if (r.value === 1) startGame(G.mode === 'don' && !G.sets ? 'don' : 'story', true);
   else toMenu();
+}
+
+// =====================================================================
+//  ANIMATION SYSTEM
+//  springs + additive FX layers (camera / gun / dealer), bezier moves,
+//  light rigid-body props, and every set piece of the game
+// =====================================================================
+Object.assign(ease, {
+  sine: k => -(Math.cos(Math.PI * k) - 1) / 2,
+  outBack: k => { const c1 = 2.0, c3 = c1 + 1; return 1 + c3 * Math.pow(k - 1, 3) + c1 * Math.pow(k - 1, 2); },
+  inBack: k => { const c1 = 1.8, c3 = c1 + 1; return c3 * k * k * k - c1 * k * k; },
+  outQuart: k => 1 - Math.pow(1 - k, 4),
+  inQuad: k => k * k,
+  outBounce: k => {
+    const n1 = 7.5625, d1 = 2.75;
+    if (k < 1 / d1) return n1 * k * k;
+    if (k < 2 / d1) { k -= 1.5 / d1; return n1 * k * k + 0.75; }
+    if (k < 2.5 / d1) { k -= 2.25 / d1; return n1 * k * k + 0.9375; }
+    k -= 2.625 / d1; return n1 * k * k + 0.984375;
+  },
+});
+class Spring {
+  constructor(k = 150, d = 13) { this.x = 0; this.v = 0; this.k = k; this.d = d; this.target = 0; }
+  kick(v) { this.v += v; }
+  reset() { this.x = 0; this.v = 0; }
+  step(dt) {
+    if (dt <= 0) return;
+    const n = Math.min(240, Math.ceil(dt / 0.006)), h = dt / n;
+    for (let i = 0; i < n; i++) { this.v += (-this.k * (this.x - this.target) - this.d * this.v) * h; this.x += this.v * h; }
+  }
+}
+const vnoise = (t, s = 0) => Math.sin(t * 1.93 + s * 7.1) * 0.5 + Math.sin(t * 3.71 + s * 3.3) * 0.3 + Math.sin(t * 7.13 + s * 1.7) * 0.2;
+const qAxis = (axis, a) => new THREE.Quaternion().setFromAxisAngle(axis, a);
+
+const FX = {
+  cam: { kick: new Spring(170, 15), push: new Spring(120, 13), roll: new Spring(90, 9), yaw: new Spring(140, 14), fov: new Spring(80, 11),
+    tremble: 0, trembleT: 0, leanZ: 0, leanY: 0, leanPitch: 0, leanRoll: 0, leanYaw: 0, fovBase: 0 },
+  gun: { recoil: new Spring(200, 16), lift: new Spring(140, 11), roll: new Spring(110, 9), pump: 0, tremble: 0, trembleT: 0, sway: 0 },
+  dealer: { nod: new Spring(80, 9), tilt: new Spring(70, 8), push: new Spring(110, 12), laugh: 0, jaw: 0, jawT: 0,
+    curl: [0.25, 0.25], curlT: [0.25, 0.25], lookYaw: 0, lookPitch: 0, glance: 2 },
+  vig: 0, vigT: 0, tint: new THREE.Color(1, 1, 1), tintAmt: 0, aberr: 0,
+};
+const CAMBASE = { y: 0, z: 0, fov: 55 };
+G.dealerGrip = [false, false];
+function resetFx() {
+  const c = FX.cam, g = FX.gun, d = FX.dealer;
+  [c.kick, c.push, c.roll, c.yaw, c.fov, g.recoil, g.lift, g.roll, d.nod, d.tilt, d.push].forEach(s => s.reset());
+  Object.assign(c, { tremble: 0, trembleT: 0, leanZ: 0, leanY: 0, leanPitch: 0, leanRoll: 0, leanYaw: 0, fovBase: 0 });
+  Object.assign(g, { pump: 0, tremble: 0, trembleT: 0, sway: 0 });
+  Object.assign(d, { laugh: 0, jaw: 0, jawT: 0, curl: [0.25, 0.25], curlT: [0.25, 0.25] });
+  FX.vig = FX.vigT = FX.tintAmt = FX.aberr = 0;
+  G.dealerGrip = [false, false];
+  PHYS.forEach(p => { if (p.obj.parent) p.obj.parent.remove(p.obj); }); PHYS.length = 0;
+  for (const k of Object.keys(BIND)) { const r = BIND[k]; if (r && r.parent) r.parent.remove(r); BIND[k] = null; }
+}
+
+// ---------- anchor points ----------
+function headPos() { W.dealer.head.updateMatrixWorld(true); return W.dealer.head.getWorldPosition(V3()); }
+function camQuat() { camRig.updateMatrixWorld(true); return camera.getWorldQuaternion(new THREE.Quaternion()); }
+function camDir(v) { return v.clone().applyQuaternion(camQuat()); }
+const AP = {
+  mouth: u => isP(u) ? camWorld(V3(0, -0.075, -0.2)) : headPos().add(V3(0, -0.17, 0.32)),
+  face: u => isP(u) ? camWorld(V3(0, -0.03, -0.3)) : headPos().add(V3(0, -0.04, 0.45)),
+  hold: u => isP(u) ? camWorld(V3(0.02, -0.1, -0.38)) : headPos().add(V3(0.0, -0.28, 0.38)),
+  ear: u => isP(u) ? camWorld(V3(0.12, -0.03, -0.15)) : headPos().add(V3(0.32, -0.04, 0.08)),
+  chest: u => isP(u) ? camWorld(V3(0, -0.5, -0.22)) : headPos().add(V3(0, -0.52, 0.12)),
+  thigh: u => isP(u) ? camWorld(V3(0.12, -0.42, -0.2)) : headPos().add(V3(0.12, -0.6, 0.18)),
+  eyes: u => isP(u) ? camWorld(V3(0, 0, -0.07)) : headPos().add(V3(0, 0.07, 0.36)),
+};
+function faceQuat(u) { return isP(u) ? camQuat() : new THREE.Quaternion(); }
+function rightAxis(u) { return isP(u) ? V3(1, 0, 0).applyQuaternion(camQuat()) : V3(-1, 0, 0); }
+function upAxis(u) { return isP(u) ? V3(0, 1, 0).applyQuaternion(camQuat()) : UP.clone(); }
+function tipQuat(u, a) { return qAxis(rightAxis(u), a).multiply(faceQuat(u)); }
+function gunAxis() { W.gun.updateMatrixWorld(true); return V3(1, 0, 0).applyQuaternion(W.gun.getWorldQuaternion(new THREE.Quaternion())).normalize(); }
+function gunTop() { W.gun.updateMatrixWorld(true); return W.gun.localToWorld(V3(0.05, 0.03, 0)).add(V3(0, 0.1, 0)); }
+function gunLookPose() { return poseLook(POSE.seat.pos.clone().add(V3(0, -0.1, -0.32)), W.gunRig.position.clone().add(V3(0, 0.02, 0))); }
+
+// ---------- movement helpers ----------
+function moveTo(obj, pos, ms, { quat = null, lift = 0, e = ease.sine, spin = 0, axis = UP } = {}) {
+  const p0 = obj.position.clone(), q0 = obj.quaternion.clone(), p2 = pos.clone();
+  const p1 = p0.clone().lerp(p2, 0.5); p1.y += lift;
+  const qs = new THREE.Quaternion();
+  return tween(ms, k => {
+    const a = (1 - k) * (1 - k), b = 2 * (1 - k) * k, c = k * k;
+    obj.position.set(a * p0.x + b * p1.x + c * p2.x, a * p0.y + b * p1.y + c * p2.y, a * p0.z + b * p1.z + c * p2.z);
+    if (quat) obj.quaternion.slerpQuaternions(q0, quat, Math.min(1, k)); else if (spin) obj.quaternion.copy(q0);
+    if (spin) { qs.setFromAxisAngle(axis, spin * k); obj.quaternion.premultiply(qs); }
+  }, e);
+}
+function squash(obj, amt = 0.2, ms = 320) {
+  const s0 = obj.scale.clone();
+  return tween(ms, k => { const w = Math.sin(k * Math.PI * 2.5) * Math.pow(1 - k, 2) * amt; obj.scale.set(s0.x * (1 + w), s0.y * (1 - w), s0.z * (1 + w)); }, ease.linear)
+    .then(() => obj.scale.copy(s0));
+}
+function sprite(pos, color, size, additive = true, tex = TEX.flash) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color, transparent: true, depthWrite: false, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending }));
+  s.position.copy(pos); s.scale.set(size, size, 1); scene.add(s); return s;
+}
+async function flashLight(pos, color = 0x9fd0ff, intensity = 6, ms = 160) {
+  if (!W.fxLight) { W.fxLight = new THREE.PointLight(0xffffff, 0, 2.5, 2); scene.add(W.fxLight); }
+  const L = W.fxLight; L.position.copy(pos); L.color.setHex(color); L.intensity = intensity;
+  await tween(ms, k => { L.intensity = intensity * (1 - k); }, ease.linear);
+}
+function burst(pos, color, n = 14, speed = 0.5, size = 0.012) {
+  for (let i = 0; i < n; i++) spawnParticle(pos, { color, additive: true, vel: V3(rand(-1, 1), rand(-0.2, 1), rand(-1, 1)).multiplyScalar(speed), size, grow: -0.004, life: rand(0.3, 0.7), opacity: 1 });
+}
+async function trailSmoke(ms) {
+  const end = clock.t + ms / 1000, dur = ms / 1000;
+  while (clock.t < end) {
+    W.gun.updateMatrixWorld(true);
+    const m = W.gun.userData.muzzle.getWorldPosition(V3()), left = (end - clock.t) / dur;
+    spawnParticle(m, { vel: V3(rand(-0.02, 0.02), rand(0.06, 0.14), rand(-0.02, 0.02)), size: rand(0.015, 0.03), grow: rand(0.05, 0.1), life: rand(1.0, 1.8), opacity: 0.08 + 0.22 * left });
+    await wait(60);
+  }
+}
+
+// ---------- tiny rigid-body props (shells, barrel piece, cans, dice...) ----------
+const PHYS = [];
+function floorAt(x, z) { return Math.abs(x) < 0.76 && Math.abs(z) < 1.12 ? TABLE_Y : 0; }
+function physProp(obj, { vel, spin = V3(), rest = 0.35, fric = 0.72, life = 4, radius = 0.012, onBounce = null, settle = null, dispose = false } = {}) {
+  const p = { obj, v: vel.clone(), w: spin.clone(), rest, fric, life, radius, onBounce, settle, dispose, bounces: 0, resting: false };
+  PHYS.push(p); return p;
+}
+function updatePhys(dt) {
+  if (!PHYS.length || dt <= 0) return;
+  const n = Math.min(80, Math.ceil(dt / 0.008)), h = dt / n;
+  for (let i = PHYS.length - 1; i >= 0; i--) {
+    const p = PHYS[i], o = p.obj;
+    if (!o.parent) { PHYS.splice(i, 1); continue; }
+    for (let s = 0; s < n && !p.resting; s++) {
+      p.v.y -= 9.8 * h;
+      o.position.addScaledVector(p.v, h);
+      o.rotation.x += p.w.x * h; o.rotation.y += p.w.y * h; o.rotation.z += p.w.z * h;
+      const fy = floorAt(o.position.x, o.position.z) + p.radius;
+      if (o.position.y < fy) {
+        o.position.y = fy;
+        if (p.v.y < 0) {
+          const imp = -p.v.y;
+          p.v.y = imp * p.rest; p.v.x *= p.fric; p.v.z *= p.fric; p.w.multiplyScalar(0.55);
+          if (imp > 0.35 && p.onBounce) p.onBounce(imp, p.bounces++);
+          if (p.v.y < 0.3 && Math.hypot(p.v.x, p.v.z) < 0.06) { p.resting = true; p.v.set(0, 0, 0); if (p.settle) p.settle(o); }
+        }
+        p.v.x *= 1 - 4 * h; p.v.z *= 1 - 4 * h;
+      }
+    }
+    p.life -= dt;
+    if (p.life <= 0) {
+      PHYS.splice(i, 1);
+      animScale(o, 0.001, 300).then(() => { if (o.parent) o.parent.remove(o); if (p.dispose) disposeObj(o); });
+    }
+  }
+}
+function settleTo(o, q, ms = 160) { const q0 = o.quaternion.clone(); tween(ms, k => o.quaternion.slerpQuaternions(q0, q, k), ease.out); }
+function lyingQuat(yaw = rand(0, 6.28)) { return qAxis(UP, yaw).multiply(qAxis(V3(0, 0, 1), Math.PI / 2)); }
+
+// ---------- gun: eject, rack, saw piece ----------
+function ejectShellFx(live, delay = 0) {
+  wait(delay * 1000).then(() => {
+    W.gun.updateMatrixWorld(true);
+    const s = shellObj(live ? 'live' : 'blank');
+    s.position.copy(W.gun.localToWorld(V3(0.045, 0.03, 0.022)));
+    const q = W.gun.getWorldQuaternion(new THREE.Quaternion());
+    s.quaternion.copy(q).multiply(qAxis(V3(0, 0, 1), -Math.PI / 2));
+    scene.add(s);
+    const out = V3(0.1, 0.3, 1).applyQuaternion(q).normalize();
+    const vel = out.multiplyScalar(rand(1.0, 1.5)); vel.y = Math.abs(vel.y) + rand(1.0, 1.6);
+    physProp(s, { vel, spin: V3(rand(-16, 16), rand(-8, 8), rand(-16, 16)), rest: 0.38, radius: 0.013, life: rand(4, 6),
+      onBounce: (imp, n) => S.clack(0, Math.min(1, imp / 2) / (n + 1)), settle: o => settleTo(o, lyingQuat()) });
+  });
+}
+async function rackAnim(ejects = []) {
+  const g = FX.gun;
+  S.rack();
+  await tween(130, k => { g.pump = k; }, ease.out);
+  ejects.forEach((live, i) => ejectShellFx(live, i * 0.12));
+  g.roll.kick(2.4); g.recoil.kick(0.25);
+  await wait(55);
+  await tween(150, k => { g.pump = 1 - k; }, ease.in);
+  g.recoil.kick(-0.4); g.lift.kick(-0.9);
+}
+function dropBarrelPiece() {
+  const b = W.gun.userData.barrel; W.gun.updateMatrixWorld(true);
+  const piece = new THREE.Mesh(cyl(0.0165, 0.0165, 0.2, 12), MAT.gunMetal);
+  piece.castShadow = true;
+  piece.position.copy(b.localToWorld(V3(0.4, 0, 0)));
+  piece.quaternion.setFromUnitVectors(UP, gunAxis());
+  scene.add(piece);
+  physProp(piece, { vel: V3(rand(-0.2, 0.2), 0.7, rand(-0.15, 0.15)), spin: V3(rand(-5, 5), rand(-2, 2), rand(-5, 5)), rest: 0.3, radius: 0.017, life: 7,
+    onBounce: (imp, n) => { if (n < 3) S.metal(); }, settle: o => settleTo(o, qAxis(UP, rand(0, 6)).multiply(qAxis(V3(1, 0, 0), Math.PI / 2))) });
+}
+function fireFx(shooterIsPlayer, live, targetIsPlayer) {
+  const g = FX.gun, c = FX.cam;
+  if (live) {
+    g.recoil.kick(1.3); g.lift.kick(7 + rand(0, 2)); g.roll.kick(rand(-3, 3));
+    FX.aberr = 1.4; c.fov.kick(40);
+    if (shooterIsPlayer) { c.kick.kick(0.75); c.push.kick(0.8); c.roll.kick(rand(-0.6, 0.6)); }
+    else c.kick.kick(0.4);
+    trailSmoke(1700);
+  } else {
+    g.lift.kick(1.8); g.recoil.kick(0.15);
+    if (shooterIsPlayer) c.kick.kick(0.15);
+  }
+}
+
+// ---------- player gun handling ----------
+async function playerPickupGun() {
+  const g = FX.gun;
+  S.pickup(); swayObj.enabled = false;
+  W.dealer.look.copy(W.gunRig.position);
+  const q0 = W.gunRig.quaternion.clone();
+  await moveTo(W.gunRig, W.gunRig.position.clone().add(V3(0, 0.05, 0.03)), 170, { quat: q0.clone().multiply(qAxis(V3(1, 0, 0), 0.3)), e: ease.out });
+  S.whoosh();
+  const hp = gunPosePlayerHold();
+  await moveTo(W.gunRig, hp.pos, 540, { quat: hp.quat, lift: 0.14, e: ease.sine });
+  g.lift.kick(-2.6); g.recoil.kick(-0.3); FX.cam.kick.kick(-0.3);
+  g.sway = 1;
+  W.dealer.look.copy(camPos());
+}
+async function playerAim(self) {
+  const g = FX.gun, c = FX.cam, F = FX.dealer;
+  if (!self) {
+    const pose = gunPosePlayerAimDealer();
+    await moveTo(W.gunRig, pose.pos, 430, { quat: pose.quat, lift: 0.03, e: ease.outQuart });
+    g.lift.kick(1.4); animVal(c, 'fovBase', -6, 500, ease.sine);
+    W.gun.updateMatrixWorld(true);
+    W.dealer.look.copy(W.gun.userData.muzzle.getWorldPosition(V3()));
+    F.tilt.kick(-1.2); F.jawT = -0.03; F.push.kick(-0.3);
+    await wait(420);
+  } else {
+    c.trembleT = 0.7; g.trembleT = 1; FX.vigT = 0.75; g.sway = 0.4;
+    S.heart(0, 1.0); S.heart(1.25, 1.15);
+    const pose = gunPosePlayerSelf();
+    animVal(c, 'fovBase', -11, 1300, ease.sine);
+    await moveTo(W.gunRig, pose.pos, 1150, { quat: pose.quat, lift: 0.12, e: ease.sine });
+    W.dealer.look.copy(camPos()); F.jawT = 0.16; F.push.kick(0.4);
+    await wait(850);
+  }
+}
+function calmPlayer() {
+  const c = FX.cam; c.trembleT = 0; FX.gun.trembleT = 0; FX.vigT = 0; FX.dealer.jawT = 0;
+  animVal(c, 'fovBase', 0, 600, ease.sine);
+}
+async function gunToTable(ms = 580) {
+  FX.gun.sway = 0;
+  await moveTo(W.gunRig, POSE.gunTable.pos, ms, { quat: POSE.gunTable.quat, lift: 0.13, e: ease.sine });
+  S.thud(0, 0.3); FX.gun.lift.kick(-3); FX.gun.roll.kick(1.5);
+}
+
+// ---------- dealer hands ----------
+function setGrip(a, b) { G.dealerGrip[0] = a; G.dealerGrip[1] = b; }
+function dealerBound() { return G.inGame && (G.D.cuff > 0 || G.D.taped); }
+function restPos(i) { return dealerBound() ? V3(i ? 0.045 : -0.045, 1.0, -1.18) : W.dealer.rest[i].clone(); }
+async function dealerHandTo(i, pos, ms = 420, { lift = 0.1, curl = null, e = ease.sine } = {}) {
+  const h = W.dealer.hands[i];
+  h.userData.busy = true; h.userData.carry = null;
+  FX.dealer.curlT[i] = 0;
+  await moveTo(h, pos, ms, { lift, e });
+  if (curl !== null) FX.dealer.curlT[i] = curl;
+}
+async function dealerHandsHome(ms = 450) {
+  setGrip(false, false);
+  await Promise.all(W.dealer.hands.map((h, i) => {
+    h.userData.carry = null;
+    return moveTo(h, restPos(i), ms, { lift: 0.06, e: ease.sine }).then(() => { FX.dealer.curlT[i] = 0.25; h.userData.busy = false; });
+  }));
+}
+function carry(i, obj) { const h = W.dealer.hands[i]; h.userData.busy = true; h.userData.carry = { obj, off: h.position.clone().sub(obj.position) }; }
+function releaseCarry(u) { if (isP(u)) return; W.dealer.hands.forEach(h => { h.userData.carry = null; }); }
+const GRIP_Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI / 2, Math.PI));
+const REST_Q = [new THREE.Quaternion().setFromEuler(new THREE.Euler(0.85, 0.3, 0)), new THREE.Quaternion().setFromEuler(new THREE.Euler(0.85, -0.3, 0))];
+function updateHands() {
+  const D = W.dealer; W.gun.updateMatrixWorld(true);
+  const gq = W.gun.getWorldQuaternion(new THREE.Quaternion());
+  if (G.dealerGrip[0]) { D.hands[0].position.copy(W.gun.localToWorld(V3(-0.05, -0.06, 0))); D.hands[0].quaternion.copy(gq).multiply(GRIP_Q); }
+  if (G.dealerGrip[1]) { D.hands[1].position.copy(W.gun.userData.pump.localToWorld(V3(0, -0.05, 0))); D.hands[1].quaternion.copy(gq).multiply(GRIP_Q); }
+  D.hands.forEach((h, i) => {
+    const gs = G.dealerGrip[i] ? 1.3 : 1.7; h.scale.setScalar(h.scale.x + (gs - h.scale.x) * 0.2);
+    if (!G.dealerGrip[i]) h.quaternion.slerp(REST_Q[i], 0.12);
+    const c = h.userData.carry;
+    if (c && c.obj.parent) h.position.copy(c.obj.position).add(c.off);
+    else if (!h.userData.busy && !G.dealerGrip[i] && G.inGame) h.position.lerp(restPos(i), 0.08);
+  });
+}
+function dealerReact(kind) {
+  const F = FX.dealer;
+  if (kind === 'laugh') { F.laugh = 1.3; S.laugh(); F.nod.kick(-0.6); }
+  else if (kind === 'tilt') { F.tilt.kick(rand(0.8, 1.4) * (Math.random() < 0.5 ? -1 : 1)); F.nod.kick(0.4); }
+  else if (kind === 'lean') F.push.kick(0.7);
+  else if (kind === 'flinch') { F.push.kick(-1.1); F.nod.kick(-1.4); F.tilt.kick(rand(-1.2, 1.2)); }
+}
+
+// ---------- dealer gun handling ----------
+function poseDealerHold() { return { pos: V3(0.02, 1.07, -1.0), quat: quatFromX(V3(1, 0.15, 0.35)) }; }
+async function dealerPickupGun() {
+  W.dealer.look.copy(W.gunRig.position);
+  W.gun.updateMatrixWorld(true);
+  await Promise.all([
+    dealerHandTo(0, W.gun.localToWorld(V3(-0.04, -0.045, 0)), 460, { curl: 0.85 }),
+    dealerHandTo(1, W.gun.userData.pump.localToWorld(V3(0, -0.035, 0)), 500, { curl: 0.85 }),
+  ]);
+  setGrip(true, true); S.pickup();
+  const p = poseDealerHold();
+  await moveTo(W.gunRig, p.pos, 650, { quat: p.quat, lift: 0.18, e: ease.sine });
+  FX.gun.lift.kick(-2); FX.gun.roll.kick(1.5);
+}
+async function dealerAim(toPlayer) {
+  const D = W.dealer, F = FX.dealer;
+  if (toPlayer) {
+    D.look.copy(camPos());
+    const p = gunPoseDealerAimPlayer();
+    FX.gun.trembleT = 0.35; FX.cam.trembleT = 0.35; FX.vigT = 0.45;
+    animVal(FX.cam, 'fovBase', -7, 900, ease.sine);
+    await moveTo(W.gunRig, p.pos, 850, { quat: p.quat, lift: 0.08, e: ease.sine });
+    F.push.kick(0.6); F.jawT = -0.04;
+    const fwd = camPos().sub(p.pos).normalize().multiplyScalar(0.08);
+    await moveTo(W.gunRig, p.pos.clone().add(fwd), 950, { quat: p.quat, e: ease.sine });
+  } else {
+    const p = gunPoseDealerSelf();
+    D.look.copy(camPos());
+    await moveTo(W.gunRig, p.pos, 950, { quat: p.quat, lift: 0.12, e: ease.sine });
+    F.nod.kick(-0.9); F.jawT = 0.22; F.tilt.kick(1.0);
+    await wait(700);
+  }
+}
+async function dealerPutDownGun() {
+  FX.dealer.jawT = 0; FX.gun.trembleT = 0; calmPlayer();
+  await gunToTable(650);
+  await dealerHandsHome(450);
+}
+
+// ---------- dealer hit / return ----------
+async function dealerVanishFx() {
+  const d = W.dealer, h = d.head, b = d.root, F = FX.dealer;
+  const crushModel = d.model && OPT.dealerModel !== 'procedural';
+  if (crushModel) setDealerCrushed(true);
+  const hp = headPos();
+  for (let i = 0; i < 16; i++) spawnParticle(hp, { color: 0x4a2a28, vel: V3(rand(-0.6, 0.6), rand(-0.2, 0.8), rand(-1.2, -0.2)), size: rand(0.02, 0.05), grow: 0.06, life: rand(0.5, 1.1), opacity: 0.55 });
+  F.nod.kick(-6); F.tilt.kick(rand(-4, 4));
+  const z0 = d.baseZ;
+  await tween(140, k => { b.position.z = z0 - 0.35 * k; b.position.y = 0.06 * k; h.scale.set(1 + 0.2 * k, 1 - 0.25 * k, 1 + 0.12 * k); }, ease.outQuart);
+  await tween(crushModel ? 650 : 380, k => { b.position.z = z0 - 0.35 - 0.55 * k; b.position.y = 0.06 - 0.3 * k; }, ease.inQuad);
+  b.visible = false; b.position.set(0, 0, z0); h.scale.set(1, 1, 1); d.gone = true;
+  setDealerCrushed(false);
+}
+async function dealerReturnFx() {
+  const d = W.dealer, b = d.root, F = FX.dealer;
+  if (!d.gone) return;
+  S.zap(); await wait(1150);
+  G.lampFlicker = 0.6;
+  setDealerCrushed(false);
+  b.position.set(0, -0.25, d.baseZ - 1.1); b.visible = true; d.gone = false;
+  F.nod.x = 0.7; S.whoosh();
+  await tween(1100, k => { b.position.z = d.baseZ - 1.1 * (1 - k); b.position.y = -0.25 * (1 - k); }, ease.outQuart);
+  F.nod.kick(-2.5);
+}
+
+// ---------- player hit / recover ----------
+async function playerHitFx() {
+  const c = FX.cam;
+  post.flash = 1; FX.aberr = 2; shake(1.2);
+  c.kick.kick(2.8); c.push.kick(2.2); c.roll.kick(rand(-2.5, 2.5));
+  await tween(220, k => { post.flash = 1 - k; });
+  await Promise.all([animVal(c, 'leanY', -0.35, 600, ease.inQuad), animVal(c, 'leanPitch', 0.55, 600, ease.inQuad),
+    animVal(c, 'leanRoll', rand(-0.5, 0.5), 600, ease.inQuad), fadeTo(1, 520)]);
+  SND.setMuffle(true, 0.3);
+  await wait(450);
+}
+async function playerRecoverFx() {
+  const c = FX.cam;
+  S.heart(0, 0.8);
+  for (let i = 0; i < 2; i++) { post.red = 0.9; await animVal(post, 'fade', 0.88, 110); await animVal(post, 'fade', 1, 300); await wait(i ? 180 : 110); }
+  post.red = 0; await wait(250);
+  S.zap(); await wait(1150);
+  c.leanY = 0; c.leanPitch = 0; c.leanRoll = 0; calmPlayer();
+  post.flash = 0.9; animVal(post, 'flash', 0, 600); FX.aberr = 1.2;
+  c.kick.kick(-1.8); c.push.kick(-0.8); S.gasp();
+  SND.setMuffle(false, 1.5);
+  await fadeTo(0, 650);
+}
+
+// ---------- shells: reveal, sweep, load ----------
+async function showShellsFx(shown, sayInsert) {
+  const n = shown.length, objs = [], c0 = Math.floor((8 - n) / 2);
+  W.dealer.look.set(SHELL_ZONE.x0 + 0.2, TABLE_Y, SHELL_ZONE.z);
+  shown.forEach((live, i) => {
+    const s = shellObj(live ? 'live' : 'blank');
+    s.position.set(SHELL_ZONE.x0 + SHELL_ZONE.cell * (c0 + i + 0.5), TABLE_Y + 0.35, SHELL_ZONE.z);
+    s.rotation.set(rand(-0.7, 0.7), rand(0, 6), rand(-0.7, 0.7)); s.visible = false; scene.add(s); objs.push(s);
+  });
+  for (const s of objs) {
+    s.visible = true; const r0 = s.rotation.clone();
+    tween(460, k => { s.position.y = TABLE_Y + 0.35 * (1 - k); s.rotation.set(r0.x * (1 - k), r0.y, r0.z * (1 - k)); }, ease.outBounce);
+    wait(170).then(() => S.clack(0, 0.8));
+    await wait(80);
+  }
+  await wait(420);
+  const lv = shown.filter(Boolean).length, bl = n - lv;
+  msg(`<span class="live">${lv} LIVE ROUND${lv !== 1 ? 'S' : ''}.</span> <span class="blank">${bl} BLANK${bl !== 1 ? 'S' : ''}.</span>`, '', 2600, true);
+  await wait(2300);
+  // the dealer sweeps them off the rack
+  const xr = SHELL_ZONE.x0 + SHELL_ZONE.cell * 8 + 0.05, xl = SHELL_ZONE.x0 - 0.05;
+  await dealerHandTo(1, V3(xr, TABLE_Y + 0.02, SHELL_ZONE.z - 0.03), 380, { curl: 0.15 });
+  const hand = W.dealer.hands[1];
+  S.whoosh();
+  objs.forEach(s => {
+    const delay = (xr - s.position.x) / (xr - xl) * 380;
+    wait(delay).then(() => moveTo(s, V3(0.3 + rand(-0.08, 0.08), TABLE_Y - 0.1, -1.15), 520,
+      { quat: lyingQuat(), lift: 0.04, e: ease.inQuad }).then(() => scene.remove(s)));
+  });
+  await moveTo(hand, V3(xl, TABLE_Y + 0.02, SHELL_ZONE.z - 0.04), 400, { e: ease.sine });
+  await moveTo(hand, V3(0.3, TABLE_Y + 0.02, -1.0), 420, { e: ease.inQuad });
+  if (sayInsert) say('I INSERT THE SHELLS IN AN UNKNOWN ORDER.', { hold: 900 });
+  await dealerLoadGun(n);
+  W.dealer.look.copy(camPos());
+}
+function poseDealerLoad() { return { pos: V3(-0.05, 1.02, -0.58), quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI * 0.8, 0.35, 0.15)) }; }
+async function dealerLoadGun(n) {
+  const h0 = W.dealer.hands[0];
+  W.gun.updateMatrixWorld(true);
+  await Promise.all([
+    dealerHandTo(1, W.gun.userData.pump.localToWorld(V3(0, -0.035, 0)), 420, { curl: 0.85 }),
+    dealerHandTo(0, W.gun.localToWorld(V3(0.08, -0.04, 0)), 420, { curl: 0.7 }),
+  ]);
+  setGrip(false, true); S.pickup();
+  carry(0, W.gunRig);
+  W.dealer.look.copy(poseDealerLoad().pos);
+  const lp = poseDealerLoad();
+  await moveTo(W.gunRig, lp.pos, 620, { quat: lp.quat, lift: 0.15, e: ease.sine });
+  h0.userData.carry = null;
+  const sp = n > 5 ? 0.75 : 1, lap = V3(-0.2, TABLE_Y - 0.12, -1.2);
+  for (let i = 0; i < n; i++) {
+    const s = shellObj('grey'); s.position.copy(lap); s.quaternion.copy(lyingQuat(0)); scene.add(s);
+    await dealerHandTo(0, lap.clone().add(V3(0, 0.02, 0.04)), 150 * sp, { lift: 0.02, curl: 0.9 });
+    carry(0, s);
+    W.gun.updateMatrixWorld(true);
+    const port = W.gun.localToWorld(V3(0.06, -0.045, 0)), axis = gunAxis();
+    await moveTo(s, port.clone().addScaledVector(axis, -0.05), 200 * sp, { quat: new THREE.Quaternion().setFromUnitVectors(UP, axis.clone().negate()), lift: 0.07, e: ease.sine });
+    h0.userData.carry = null; FX.dealer.curlT[0] = 0.3;
+    await moveTo(s, port.clone().addScaledVector(axis, 0.06), 90 * sp, { e: ease.inQuad });
+    scene.remove(s); S.load(); FX.gun.recoil.kick(-0.5); FX.gun.lift.kick(-0.7);
+    await wait(40 * sp);
+  }
+  h0.userData.busy = false;
+  await rackAnim([]);
+  await wait(120);
+  await gunToTable(600);
+  await dealerHandsHome(420);
+}
+
+// ---------- item box ----------
+async function boxIn(bx, zTo, player) {
+  bx.visible = true; bx.userData.lid.rotation.x = 0; bx.scale.setScalar(1);
+  bx.position.set(0, TABLE_Y - 0.12, player ? 1.3 : -1.3); bx.rotation.set(0, rand(-0.25, 0.25), 0);
+  S.whoosh();
+  await moveTo(bx, V3(0, TABLE_Y, zTo), 520, { lift: 0.14, e: ease.sine });
+  S.thud(0, 0.3); squash(bx, 0.25, 320);
+}
+async function boxOpen(bx) {
+  S.box();
+  await tween(430, k => { bx.userData.lid.rotation.x = -2.0 * k; }, ease.outBack);
+  smokePuff(bx.position.clone().add(V3(0, 0.08, 0)), 6, 0.05);
+}
+async function boxOut(bx, player) {
+  await tween(180, k => { bx.userData.lid.rotation.x = -2.0 * (1 - k); }, ease.in);
+  S.thud(0, 0.15);
+  await moveTo(bx, V3(0, TABLE_Y - 0.15, player ? 1.35 : -1.35), 380, { lift: 0.06, e: ease.inBack });
+  bx.visible = false;
+}
+async function itemFromBox(o, bx, showPos, tilt) {
+  o.scale.setScalar(0.3);
+  o.position.copy(bx.position).add(V3(0, 0.05, 0));
+  S.whoosh();
+  animScale(o, 1, 380, ease.outBack);
+  await moveTo(o, showPos, 420, { quat: tilt, lift: 0.1, spin: Math.PI * 2, axis: UP, e: ease.outQuart });
+  o.userData.float = true;
+}
+async function placeItem(o, pos) {
+  o.userData.float = false;
+  await moveTo(o, pos, 400, { quat: qAxis(UP, rand(-0.25, 0.25)), lift: 0.1, e: ease.sine });
+  S.place(); squash(o, 0.3, 300);
+}
+
+// ---------- restraints that stay visible (cuffs / tape) ----------
+const BIND = { Dcuffs: null, Dtape: null, Pcuffs: null, Ptape: null };
+function syncBind(key, on, make) {
+  let o = BIND[key];
+  if (on && !o) {
+    o = BIND[key] = make();
+    o.userData.target = null;
+    squash(o, 0.3, 300);
+  } else if (!on && o) {
+    BIND[key] = null;
+    if (o.parent !== scene) scene.attach(o);
+    S.metal();
+    physProp(o, { vel: V3(rand(-0.3, 0.3), 0.8, rand(-0.2, 0.2)), spin: V3(rand(-6, 6), rand(-6, 6), rand(-6, 6)), rest: 0.3, radius: 0.01, life: 2.2, dispose: true });
+  }
+  return o;
+}
+function updateRestraints() {
+  if (!G.inGame) return;
+  const dc = syncBind('Dcuffs', G.D.cuff > 0, () => { const o = buildItem('cuffs'); scene.add(o); return o; });
+  const dt = syncBind('Dtape', G.D.taped, () => { const o = buildItem('tape'); o.scale.setScalar(0.8); scene.add(o); return o; });
+  const mid = W.dealer.hands[0].position.clone().lerp(W.dealer.hands[1].position, 0.5);
+  if (dc) { dc.position.copy(mid).add(V3(0, 0.0, 0.04)); dc.rotation.set(1.2, 0, 0); dc.visible = W.dealer.root.visible; }
+  if (dt) { dt.position.copy(mid).add(V3(0, -0.02, 0.02)); dt.rotation.set(0, 0, Math.PI / 2); dt.visible = W.dealer.root.visible; }
+  syncBind('Pcuffs', G.P.cuff > 0, () => { const o = buildItem('cuffs'); camera.add(o); o.position.set(0, -0.29, -0.42); o.rotation.set(1.25, 0, 0); return o; });
+  syncBind('Ptape', G.P.taped, () => { const o = buildItem('tape'); camera.add(o); o.position.set(0.02, -0.31, -0.44); o.rotation.set(0.3, 0, Math.PI / 2); return o; });
+}
+
+// ---------- idle life on table items / dust ----------
+function updateItemsIdle(dt, t) {
+  for (const u of [G.P, G.D]) u.items.forEach(it => {
+    if (!it) return;
+    const inner = it.obj.children[0]; if (!inner) return;
+    const hov = hovered && hovered.root === it.obj && isP(u) ? 0.02 : 0;
+    inner.position.y += (hov - inner.position.y) * Math.min(1, dt * 12);
+    inner.rotation.z += ((hov ? Math.sin(t * 4) * 0.08 : 0) - inner.rotation.z) * Math.min(1, dt * 8);
+  });
+  scene.children.forEach(o => {
+    if (!o.userData.float) return;
+    const inner = o.children[0]; if (!inner) return;
+    inner.position.y = Math.sin(t * 3) * 0.008; inner.rotation.y = Math.sin(t * 1.3) * 0.25;
+  });
+}
+function initDust() {
+  const n = 55, pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { pos[i * 3] = rand(-0.8, 0.8); pos[i * 3 + 1] = rand(0.85, 1.9); pos[i * 3 + 2] = rand(-0.9, 0.5); }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  W.dust = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xc8b4a0, size: 0.004, transparent: true, opacity: 0.18, depthWrite: false, blending: THREE.AdditiveBlending }));
+  scene.add(W.dust);
+}
+function updateDust(dt, t) {
+  if (!W.dust) return;
+  const a = W.dust.geometry.attributes.position, p = a.array;
+  for (let i = 0; i < p.length; i += 3) {
+    p[i] += Math.sin(t * 0.3 + i) * 0.004 * dt; p[i + 1] += (0.012 + Math.sin(t * 0.5 + i * 0.7) * 0.01) * dt; p[i + 2] += Math.cos(t * 0.27 + i) * 0.004 * dt;
+    if (p[i + 1] > 1.9) p[i + 1] = 0.85;
+  }
+  a.needsUpdate = true;
+}
+
+// ---------- per-frame FX application ----------
+function updateFx(dt, t, rdt) {
+  const c = FX.cam, g = FX.gun, sw = swayObj;
+  [c.kick, c.push, c.roll, c.yaw, c.fov, g.recoil, g.lift, g.roll].forEach(s => s.step(dt));
+  c.tremble += (c.trembleT - c.tremble) * Math.min(1, dt * 3);
+  g.tremble += (g.trembleT - g.tremble) * Math.min(1, dt * 4);
+  FX.vig += (FX.vigT - FX.vig) * Math.min(1, dt * 3);
+  FX.aberr = Math.max(0, FX.aberr - dt * 2.5);
+  // camera
+  const allow = sw.enabled && pointer.type === 'mouse' && pointer.has && !clock.paused;
+  sw.tYaw = allow ? -pointer.nx * 0.09 : 0; sw.tPitch = allow ? -pointer.ny * 0.06 : 0;
+  sw.yaw += (sw.tYaw - sw.yaw) * Math.min(1, rdt * 3); sw.pitch += (sw.tPitch - sw.pitch) * Math.min(1, rdt * 3);
+  sw.shake = Math.max(0, sw.shake - rdt * 2.2);
+  const sk = sw.shake * sw.shake * 0.05, tr = c.tremble * 0.014, breath = G.inGame ? Math.sin(t * 1.1) * 0.004 : 0;
+  camera.rotation.set(
+    sw.pitch + c.kick.x + c.leanPitch + breath + vnoise(t * 7, 1) * tr + (Math.random() - 0.5) * sk,
+    sw.yaw + c.yaw.x + c.leanYaw + vnoise(t * 6, 2) * tr + (Math.random() - 0.5) * sk,
+    c.roll.x + c.leanRoll + vnoise(t * 5, 3) * tr * 0.6 + (Math.random() - 0.5) * sk * 0.5);
+  camera.position.set(0, CAMBASE.y + c.leanY + breath * 0.5, CAMBASE.z + c.push.x + c.leanZ);
+  const fov = CAMBASE.fov + c.fov.x + c.fovBase;
+  if (Math.abs(fov - camera.fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  // gun (additive on top of the rig pose)
+  const gtr = g.tremble * 0.006;
+  const sx = g.sway ? Math.sin(t * 1.4) * 0.006 * g.sway : 0, sy = g.sway ? Math.sin(t * 2.1) * 0.004 * g.sway : 0;
+  W.gun.position.set(-g.recoil.x, sy + vnoise(t * 11, 4) * gtr, sx + vnoise(t * 9, 5) * gtr);
+  W.gun.rotation.set(g.roll.x + vnoise(t * 8, 6) * gtr * 3, 0, g.lift.x + vnoise(t * 10, 7) * gtr * 3);
+  W.gun.userData.pump.position.x = 0.3 - g.pump * 0.075;
+  // post
+  const u = post.mat.uniforms;
+  u.uVig.value = FX.vig; u.uAberr.value = FX.aberr; u.uTint.value.set(FX.tint.r, FX.tint.g, FX.tint.b); u.uTintAmt.value = FX.tintAmt;
+  updateDust(dt, t); updatePhys(dt); updateItemsIdle(dt, t); updateRestraints();
+  // dealer glances around while you think
+  const F = FX.dealer;
+  if (G.inGame && G.playerTurn && accepting('item') && !W.dealer.gone) {
+    F.glance -= dt;
+    if (hovered && hovered.target && (hovered.target.type === 'item' || hovered.target.type === 'gun')) W.dealer.look.copy(hovered.root.getWorldPosition(V3()));
+    else if (F.glance < 0) {
+      F.glance = rand(1.2, 3.5);
+      const r = Math.random(), items = G.P.items.filter(Boolean).concat(G.D.items.filter(Boolean));
+      if (r < 0.5 || !items.length) W.dealer.look.copy(camPos());
+      else if (r < 0.7) W.dealer.look.copy(W.gunRig.position);
+      else W.dealer.look.copy(pick(items).obj.position);
+    }
+  }
+}
+
+// =====================================================================
+//  ITEM ANIMATIONS (one per item family, for the player and the dealer)
+// =====================================================================
+async function presentItemFx(u, obj) {
+  obj.userData.target = null; obj.userData.float = false;
+  if (!isP(u)) {
+    const hi = obj.position.x < 0 ? 0 : 1;
+    await dealerHandTo(hi, obj.position.clone().add(V3(0, 0.02, -0.03)), 380, { curl: 0.85 });
+    carry(hi, obj); S.pickup();
+    await moveTo(obj, AP.hold(u), 480, { quat: tipQuat(u, -0.5), lift: 0.1, e: ease.sine });
+    return;
+  }
+  S.pickup();
+  await moveTo(obj, AP.hold(u), 430, { quat: tipQuat(u, 0.6), lift: 0.06, e: ease.outBack });
+}
+function tossAway(u, obj) {
+  releaseCarry(u);
+  obj.userData.tossed = true;
+  const side = isP(u) ? camDir(V3(0.9, 0.4, -0.3)) : V3(0.8, 0.5, 0.4);
+  physProp(obj, { vel: side.multiplyScalar(1.3), spin: V3(rand(-8, 8), rand(-8, 8), rand(-8, 8)), rest: 0.3, radius: 0.03, life: 2.4, dispose: true, onBounce: (imp, n) => { if (n < 2) S.thud(0, 0.15); } });
+}
+const A = {
+  async drink(u, obj, ctx, id) {
+    const P = isP(u), m = AP.mouth(u);
+    await moveTo(obj, m.clone().add(P ? camDir(V3(0, -0.04, -0.06)) : V3(0, -0.05, 0.06)), 360, { quat: faceQuat(u), e: ease.sine });
+    if (P) animVal(FX.cam, 'leanPitch', 0.3, 520, ease.sine); else { FX.dealer.nod.kick(-2.4); FX.dealer.jawT = 0.25; }
+    await moveTo(obj, m, 420, { quat: tipQuat(u, 2.0), e: ease.sine });
+    for (let i = 0; i < 3; i++) { await tween(170, k => { obj.position.y = m.y + Math.sin(k * Math.PI) * 0.012; }); if (P) FX.cam.kick.kick(0.12); else FX.dealer.nod.kick(-0.4); }
+    if (P) animVal(FX.cam, 'leanPitch', 0, 450, ease.sine); else FX.dealer.jawT = 0;
+    await moveTo(obj, m.clone().add(P ? camDir(V3(0.06, -0.08, -0.12)) : V3(0.1, -0.1, 0.1)), 300, { quat: faceQuat(u), e: ease.sine });
+    if (id !== 'whiskey') { S.crush(); const s0 = obj.scale.clone(); await tween(120, k => obj.scale.set(s0.x * (1 - 0.35 * k), s0.y * (1 - 0.18 * k), s0.z * (1 + 0.12 * k))); }
+    tossAway(u, obj);
+  },
+  async smoke(u, obj) {
+    const P = isP(u), m = AP.mouth(u);
+    await moveTo(obj, m, 420, { quat: tipQuat(u, P ? 1.1 : -1.1), e: ease.sine });
+    const fp = obj.position.clone().add(P ? camDir(V3(0.03, 0.01, 0.0)) : V3(0.03, 0.02, 0.05));
+    const fl = sprite(fp, 0xffa040, 0.035); S.flame(); flashLight(fp, 0xffa050, 2.5, 500);
+    await tween(420, k => { fl.scale.setScalar(0.03 + Math.random() * 0.015); fl.material.opacity = 1 - k * 0.5; }, ease.linear);
+    scene.remove(fl);
+    const ember = sprite(fp, 0xff5a20, 0.012);
+    if (P) animVal(FX.cam, 'leanPitch', 0.07, 400, ease.sine); else FX.dealer.jawT = -0.05;
+    await tween(900, k => { ember.scale.setScalar(0.01 + k * 0.01); }, ease.linear);
+    scene.remove(ember);
+    const mouth = AP.mouth(u), dir = P ? camDir(V3(0, 0.12, -1)) : V3(0, 0.12, 1);
+    if (!P) FX.dealer.jawT = 0.15;
+    for (let i = 0; i < 14; i++) {
+      spawnParticle(mouth.clone().addScaledVector(dir, 0.06), { color: 0x9a948c, vel: dir.clone().multiplyScalar(rand(0.12, 0.32)).add(V3(rand(-0.04, 0.04), rand(0.02, 0.08), rand(-0.04, 0.04))), size: rand(0.02, 0.045), grow: rand(0.1, 0.2), life: rand(1.5, 2.6), opacity: rand(0.1, 0.2) });
+      await wait(35);
+    }
+    if (P) animVal(FX.cam, 'leanPitch', 0, 400, ease.sine); else FX.dealer.jawT = 0;
+    await moveTo(obj, AP.hold(u), 280, { e: ease.sine });
+  },
+  async pills(u, obj) {
+    const P = isP(u);
+    await moveTo(obj, AP.face(u), 280, { quat: faceQuat(u) });
+    const p0 = obj.position.clone();
+    await tween(520, k => { obj.position.copy(p0).add(V3(Math.sin(k * 60) * 0.012, Math.sin(k * 47) * 0.008, 0)); }, ease.linear);
+    await moveTo(obj, AP.mouth(u), 240, { quat: tipQuat(u, P ? 1.7 : -1.7) });
+    if (P) FX.cam.kick.kick(0.9); else FX.dealer.nod.kick(-2.2);
+    SND.tone({ type: 'sine', f: 170, f1: 90, dur: 0.18, vol: 0.2 });
+    await wait(220);
+    tossAway(u, obj);
+  },
+  async inject(u, obj) {
+    const P = isP(u), th = AP.thigh(u);
+    await moveTo(obj, th.clone().add(P ? camDir(V3(0, 0.16, 0)) : V3(0, 0.16, 0)), 260, { quat: tipQuat(u, P ? -1.4 : 1.4) });
+    await moveTo(obj, th, 110, { e: ease.inQuad });
+    S.stab();
+    if (P) { FX.cam.fov.kick(90); FX.aberr = 1.5; post.red = 0.5; animVal(post, 'red', 0, 700); FX.cam.kick.kick(-0.6); FX.cam.trembleT = 0.4; wait(900).then(() => { FX.cam.trembleT = 0; }); }
+    else { dealerReact('flinch'); FX.dealer.jawT = 0.25; wait(600).then(() => { FX.dealer.jawT = 0; }); }
+    await wait(260);
+  },
+  async inspect(u, obj, ctx, id) {
+    const P = isP(u), top = gunTop();
+    if (P) animPose(camRig, gunLookPose(), 450); else { W.dealer.look.copy(top); FX.dealer.push.kick(0.8); }
+    await moveTo(obj, top, 450, { quat: qAxis(UP, P ? 0.3 : -0.3), lift: 0.06 });
+    let L = null;
+    if (id === 'flashlight') { L = new THREE.PointLight(0xfff0c0, 3, 0.9, 2); L.position.copy(top); scene.add(L); S.blip(1500); }
+    const p0 = obj.position.clone(), axis = gunAxis();
+    await tween(950, k => { obj.position.copy(p0).addScaledVector(axis, Math.sin(k * Math.PI * 2) * 0.035); }, ease.linear);
+    if (L) scene.remove(L);
+    if (P) await animPose(camRig, POSE.seat, 450);
+  },
+  async goggles(u, obj) {
+    const P = isP(u);
+    if (P) {
+      await moveTo(obj, AP.face(u), 280, { quat: faceQuat(u) });
+      await moveTo(obj, AP.eyes(u), 200, { e: ease.inQuad });
+      obj.visible = false; S.power();
+      FX.tint.setRGB(0.3, 1.25, 0.5); await animVal(FX, 'tintAmt', 0.55, 250);
+      await wait(2700);
+      animVal(FX, 'tintAmt', 0, 300); obj.visible = true;
+      await moveTo(obj, AP.hold(u), 280);
+    } else {
+      await moveTo(obj, AP.eyes(u), 420, { quat: new THREE.Quaternion() });
+      const e = [-0.06, 0.06].map(x => sprite(obj.position.clone().add(V3(x, 0, 0.03)), 0x5aff7a, 0.05));
+      await wait(1100); e.forEach(s => scene.remove(s));
+      await moveTo(obj, AP.hold(u), 300);
+    }
+  },
+  async saw(u, obj) {
+    const P = isP(u);
+    W.gun.updateMatrixWorld(true);
+    const cut = W.gun.userData.barrel.localToWorld(V3(0.3, 0, 0)), axis = gunAxis();
+    const perp = V3().crossVectors(axis, UP).normalize(), above = cut.clone().add(V3(0, 0.07, 0));
+    if (P) animPose(camRig, gunLookPose(), 450); else W.dealer.look.copy(cut);
+    await moveTo(obj, above, 380, { quat: quatFromX(perp), lift: 0.05 });
+    for (let i = 0; i < 5; i++) {
+      const from = obj.position.clone(), to = above.clone().addScaledVector(perp, (i % 2 ? -1 : 1) * 0.06).add(V3(0, -0.013 * (i + 1), 0));
+      await tween(165, k => obj.position.lerpVectors(from, to, k), ease.sine);
+      sparks(cut.clone().add(V3(0, 0.02, 0)), 7); FX.gun.trembleT = 0.35;
+    }
+    FX.gun.trembleT = 0;
+    if (!G.gun.saw || W.gun.userData.barrel.scale.x > 0.9) { dropBarrelPiece(); setSawed(true, true); }
+    FX.gun.lift.kick(-2);
+    await moveTo(obj, above.clone().add(V3(0, 0.1, 0)), 250);
+    if (P) animPose(camRig, POSE.seat, 450);
+  },
+  async gunzap(u, obj) {
+    const top = gunTop();
+    await moveTo(obj, top, 380, { quat: new THREE.Quaternion(), lift: 0.05 });
+    await moveTo(obj, top.clone().add(V3(0, -0.07, 0)), 120, { e: ease.inQuad });
+    S.thud(0, 0.15); FX.gun.lift.kick(-1.5);
+    for (let i = 0; i < 5; i++) {
+      W.gun.updateMatrixWorld(true);
+      const p = W.gun.localToWorld(V3(rand(-0.05, 0.45), 0.03, 0));
+      sparks(p, 8, 0x9fd8ff); FX.gun.trembleT = 0.6; flashLight(p, 0x8fc8ff, 5, 120); S.zapArc();
+      await wait(90);
+    }
+    FX.gun.trembleT = 0;
+    await moveTo(obj, top.clone().add(V3(0, 0.1, 0)), 250);
+  },
+  async device(u, obj) {
+    const dev = W.displayDev; dev.updateMatrixWorld(true);
+    const top = dev.localToWorld(V3(0, 0.34, 0));
+    await moveTo(obj, top, 480, { lift: 0.1, quat: qAxis(UP, dev.rotation.y) });
+    await moveTo(obj, dev.localToWorld(V3(0, 0.24, 0)), 120, { e: ease.inQuad });
+    for (let i = 0; i < 4; i++) { const p = dev.localToWorld(V3(rand(-0.12, 0.12), 0.2, 0)); sparks(p, 8, 0x9fd8ff); flashLight(p, 0x8fc8ff, 4, 110); await wait(90); }
+    W.dispGlitch = 0.7;
+    await wait(250);
+  },
+  async pour(u, obj) {
+    const top = gunTop().add(V3(0, 0.06, 0));
+    await moveTo(obj, top, 380, { quat: new THREE.Quaternion() });
+    await moveTo(obj, top, 250, { quat: tipQuat(u, isP(u) ? -2.2 : 2.2) });
+    S.pour();
+    for (let i = 0; i < 16; i++) { spawnParticle(obj.position.clone().add(V3(rand(-0.01, 0.01), -0.02, rand(-0.01, 0.01))), { color: 0x151515, vel: V3(rand(-0.02, 0.02), -0.35, rand(-0.02, 0.02)), size: 0.008, grow: 0, life: 0.45, opacity: 0.95, tex: TEX.smoke }); await wait(35); }
+    await moveTo(obj, top.clone().add(V3(0, 0.05, 0)), 220, { quat: new THREE.Quaternion() });
+  },
+  async wrap(u, obj) {
+    W.gun.updateMatrixWorld(true);
+    const a = W.gun.localToWorld(V3(0.12, 0.03, 0)), b = W.gun.localToWorld(V3(0.45, 0.03, 0)), axis = gunAxis();
+    await moveTo(obj, a.clone().add(V3(0, 0.05, 0)), 350);
+    S.tape();
+    const q0 = obj.quaternion.clone();
+    await tween(620, k => { obj.position.lerpVectors(a, b, k).add(V3(0, 0.05 * (1 - k) + 0.012, 0)); obj.quaternion.copy(q0).premultiply(qAxis(axis, k * 12)); }, ease.sine);
+    await animScale(obj, 0.2, 150);
+  },
+  async insert(u, obj, ctx, id) {
+    await moveTo(obj, gunTop().add(V3(0.12, -0.02, 0.06)), 340);
+    const s = shellObj(id === 'liveshell' ? 'live' : 'blank');
+    s.position.copy(obj.position).add(V3(0, 0.03, 0)); scene.add(s);
+    await moveTo(s, s.position.clone().add(V3(0, 0.09, 0)), 180, { e: ease.out });
+    W.gun.updateMatrixWorld(true);
+    const port = W.gun.localToWorld(V3(0.06, 0.0, 0));
+    await moveTo(s, port, 220, { quat: new THREE.Quaternion().setFromUnitVectors(UP, gunAxis().negate()), lift: 0.03, e: ease.inQuad });
+    scene.remove(s); FX.gun.recoil.kick(-0.4);
+  },
+  async shake(u, obj) {
+    const top = gunTop().add(V3(0, 0.05, 0));
+    await moveTo(obj, top, 300);
+    const p0 = obj.position.clone();
+    FX.gun.trembleT = 0.8;
+    await tween(820, k => { obj.position.copy(p0).add(V3(Math.sin(k * 70) * 0.03, Math.abs(Math.sin(k * 55)) * 0.03, Math.sin(k * 63) * 0.015)); obj.rotation.z = Math.sin(k * 70) * 0.4; }, ease.linear);
+    FX.gun.trembleT = 0;
+  },
+  async throwBind(u, obj) {
+    const P = isP(u);
+    releaseCarry(u); if (!P) dealerHandsHome(350);
+    const tgt = P ? W.dealer.hands[0].position.clone().lerp(W.dealer.hands[1].position, 0.5).add(V3(0, 0.03, 0.04)) : camWorld(V3(0, -0.29, -0.42));
+    S.whoosh();
+    await moveTo(obj, tgt, 460, { lift: 0.18, spin: Math.PI * 3, axis: V3(1, 0, 0), e: ease.sine });
+    if (P) { dealerReact('flinch'); W.dealer.hands.forEach((h, i) => { h.userData.busy = false; }); }
+    else { FX.cam.kick.kick(-0.8); FX.cam.roll.kick(rand(-0.6, 0.6)); }
+    await wait(250);
+    obj.visible = false;
+  },
+  async throwSplash(u, obj) {
+    const P = isP(u);
+    releaseCarry(u); if (!P) dealerHandsHome(350);
+    const tgt = P ? AP.mouth(G.D) : camWorld(V3(0, -0.05, -0.25));
+    await moveTo(obj, tgt, 460, { lift: 0.2, spin: 8, axis: V3(1, 0, 0) });
+    S.splash();
+    for (let i = 0; i < 22; i++) spawnParticle(tgt, { color: 0x4adf5a, additive: true, vel: V3(rand(-0.6, 0.6), rand(-0.2, 0.6), rand(-0.6, 0.6)), size: rand(0.01, 0.025), grow: 0, life: rand(0.3, 0.7), opacity: 0.9 });
+    if (!P) { FX.tint.setRGB(0.45, 1.35, 0.45); FX.tintAmt = 0.45; animVal(FX, 'tintAmt', 0, 900); FX.cam.kick.kick(-0.5); }
+    else dealerReact('flinch');
+    obj.visible = false;
+  },
+  async wear(u, obj) {
+    const P = isP(u);
+    if (P) {
+      await moveTo(obj, AP.face(u), 250, { quat: faceQuat(u) });
+      animVal(FX.cam, 'leanPitch', -0.35, 300, ease.sine);
+      await moveTo(obj, AP.chest(u), 300, { e: ease.inQuad });
+      S.cloth(); obj.visible = false;
+      await wait(180); animVal(FX.cam, 'leanPitch', 0, 350, ease.sine); FX.cam.kick.kick(-0.3);
+    } else {
+      await moveTo(obj, AP.chest(u), 450); FX.dealer.nod.kick(1.2); S.cloth();
+      await animScale(obj, 0.5, 200); obj.visible = false;
+    }
+  },
+  async mirror(u, obj) {
+    const P = isP(u), f = AP.face(u);
+    await moveTo(obj, f.clone().add(P ? camDir(V3(0, 0.03, 0)) : V3(0, 0.05, 0)), 380, { quat: tipQuat(u, P ? -0.9 : 0.9), e: ease.outBack });
+    S.glint();
+    const gl = sprite(obj.position.clone().add(P ? camDir(V3(0, 0, -0.02)) : V3(0, 0, 0.03)), 0xffffff, 0.02);
+    await tween(420, k => { gl.scale.setScalar(0.02 + Math.sin(k * Math.PI) * 0.12); gl.material.rotation = k * 2; }, ease.linear);
+    scene.remove(gl);
+    if (P) FX.dealer.push.kick(-0.7);
+  },
+  async pray(u, obj) {
+    const P = isP(u), f = AP.face(u).add(V3(0, 0.07, 0));
+    await moveTo(obj, f, 420, { quat: tipQuat(u, P ? 1.2 : -1.2) });
+    const glow = sprite(obj.position, 0xe6c35c, 0.05);
+    const q0 = obj.quaternion.clone(), ax = isP(u) ? camDir(V3(0, 0, 1)) : V3(0, 0, 1);
+    await tween(1250, k => { obj.quaternion.copy(q0).premultiply(qAxis(ax, Math.sin(k * 14) * 0.35 * (1 - k))); glow.scale.setScalar(0.05 + Math.sin(k * Math.PI) * 0.12); glow.material.opacity = Math.sin(k * Math.PI); }, ease.linear);
+    scene.remove(glow);
+  },
+  async stab(u, obj) {
+    const P = isP(u);
+    await moveTo(obj, AP.face(u), 330, { quat: faceQuat(u) });
+    for (let i = 0; i < 3; i++) {
+      const p0 = obj.position.clone();
+      await tween(110, k => { obj.position.copy(p0).add(V3(0, -0.02 * Math.sin(k * Math.PI), 0)); });
+      S.stab();
+      if (P) dealerReact('flinch'); else { FX.cam.kick.kick(-0.6); post.red = 0.35; animVal(post, 'red', 0, 300); }
+      await wait(90);
+    }
+  },
+  async raise(u, obj) {
+    await moveTo(obj, isP(u) ? camWorld(V3(0.0, -0.06, -0.4)) : AP.face(u), 320, { quat: tipQuat(u, isP(u) ? -0.6 : 0.6), e: ease.outBack });
+  },
+  async flip(u, obj, ctx) {
+    const P = isP(u), heads = ctx.rnd < 0.5;
+    releaseCarry(u);
+    await moveTo(obj, AP.hold(u), 240, { quat: new THREE.Quaternion() });
+    const land = V3(rand(-0.1, 0.1), TABLE_Y + 0.004, P ? 0.62 : -0.62), p0 = obj.position.clone();
+    const spins = 7 + (heads ? 0 : 0.5);
+    await tween(1000, k => { obj.position.lerpVectors(p0, land, k); obj.position.y += Math.sin(k * Math.PI) * 0.38; obj.rotation.set(k * spins * Math.PI * 2, 0, 0); }, ease.linear);
+    obj.rotation.set(heads ? 0 : Math.PI, rand(0, 6), 0);
+    S.clack(0, 1);
+    await tween(180, k => { obj.position.y = land.y + Math.sin(k * Math.PI) * 0.02; });
+    await tween(360, k => { obj.rotation.z = Math.sin(k * 22) * 0.14 * (1 - k); }, ease.linear);
+    await wait(500);
+  },
+  async roll(u, obj, ctx) {
+    const P = isP(u), r = 1 + Math.floor(ctx.rnd * 6);
+    releaseCarry(u);
+    await moveTo(obj, AP.hold(u), 220);
+    const target = V3(rand(-0.15, 0.15), TABLE_Y, P ? 0.35 : -0.35);
+    const vel = target.clone().sub(obj.position).multiplyScalar(1.6); vel.y = 1.2;
+    const FACE = { 1: [0, 0, Math.PI / 2], 6: [0, 0, -Math.PI / 2], 2: [0, 0, 0], 5: [Math.PI, 0, 0], 3: [-Math.PI / 2, 0, 0], 4: [Math.PI / 2, 0, 0] };
+    const fq = qAxis(UP, rand(0, 6)).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(...FACE[r])));
+    physProp(obj, { vel, spin: V3(rand(-18, 18), rand(-10, 10), rand(-18, 18)), rest: 0.4, fric: 0.6, radius: 0.0225, life: 99,
+      onBounce: (imp, n) => S.clack(0, Math.min(1, imp / 2)), settle: o => settleTo(o, fq, 180) });
+    await wait(1000);
+    const p = PHYS.find(x => x.obj === obj);
+    if (p && !p.resting) { p.resting = true; settleTo(obj, fq, 150); }
+    if (p) PHYS.splice(PHYS.indexOf(p), 1);
+  },
+  async card(u, obj, ctx, id) {
+    const P = isP(u);
+    const start = tipQuat(u, P ? -Math.PI / 2 : Math.PI / 2), end = qAxis(upAxis(u), Math.PI).multiply(start);
+    await moveTo(obj, AP.face(u), 380, { quat: start, e: ease.outBack });
+    S.snap();
+    const glow = sprite(obj.position.clone().add(P ? camDir(V3(0, 0, -0.03)) : V3(0, 0, -0.03)), id === 'contract' ? 0xc12a20 : 0xe6c35c, 0.04);
+    const q0 = obj.quaternion.clone();
+    await tween(420, k => { obj.quaternion.slerpQuaternions(q0, end, k); glow.scale.setScalar(0.04 + k * 0.16); }, ease.outBack);
+    await tween(450, k => { glow.material.opacity = 1 - k; obj.position.y += Math.sin(k * Math.PI * 2) * 0.0006; }, ease.linear);
+    scene.remove(glow);
+  },
+  async phone(u, obj) {
+    const P = isP(u);
+    await moveTo(obj, AP.ear(u), 420, { quat: P ? qAxis(camDir(V3(0, 0, 1)), 0.35).multiply(faceQuat(u)) : qAxis(UP, -1.2), lift: 0.05 });
+    if (P) animVal(FX.cam, 'leanRoll', -0.1, 400, ease.sine); else FX.dealer.tilt.kick(1.4);
+    await wait(1700);
+    if (P) animVal(FX.cam, 'leanRoll', 0, 400, ease.sine);
+  },
+  async burst(u, obj) {
+    const p0 = obj.position.clone();
+    await tween(420, k => { obj.position.copy(p0).add(V3(Math.sin(k * 50) * 0.01, 0, Math.sin(k * 43) * 0.01)); }, ease.linear);
+    await animScale(obj, 1.4, 130, ease.outBack);
+    burst(obj.position, 0xe6c35c, 22, 0.6, 0.014); S.glint();
+    obj.visible = false;
+  },
+};
+const ITEM_ANIM = {
+  beer: 'drink', whiskey: 'drink', energy: 'drink', cig: 'smoke', cigar: 'smoke', medicine: 'pills', pills: 'pills', adrenaline: 'inject',
+  glass: 'inspect', flashlight: 'inspect', xray: 'goggles', saw: 'saw', inverter: 'gunzap', gunpowder: 'pour', burst: 'wrap',
+  liveshell: 'insert', dummy: 'insert', shuffler: 'shake', cuffs: 'throwBind', tape: 'throwBind', poison: 'throwSplash', vest: 'wear',
+  battery: 'device', fuse: 'device', mirror: 'mirror', rosary: 'pray', voodoo: 'stab', cutters: 'raise', magnet: 'raise',
+  coin: 'flip', dice: 'roll', tarot: 'card', joker: 'card', contract: 'card', phone: 'phone', box: 'burst',
+};
+async function playItemAnim(u, obj, id, ctx) {
+  const f = A[ITEM_ANIM[id]];
+  if (!f || !obj) return;
+  try { await f(u, obj, ctx, id); } catch (e) { console.warn('item anim failed:', id, e); }
+}
+function initAnim() {
+  camera.rotation.order = 'YXZ';
+  W.faceLight = new THREE.PointLight(0xffe0cc, 1.1, 0.85, 2); W.faceLight.position.set(0.08, 0.08, -0.05); camera.add(W.faceLight);
+  initDust();
 }
 
 // =====================================================================
@@ -3214,6 +4166,9 @@ function optionsHtml() {
   const onoff = key => seg(key, [[true, 'ON'], [false, 'OFF']]);
   return `
   <div class="optRow"><span>MUSIC</span><input type="range" min="0" max="1" step="0.05" data-range="music" value="${OPT.music}"></div>
+  <div class="optRow"><span>SOUNDTRACK<small id="musicStatus"></small></span><div class="seg">
+    <button data-opt="musicSrc" data-val="file" class="${OPT.musicSrc === 'file' ? 'on' : ''}">MP3</button><button data-opt="musicSrc" data-val="synth" class="${OPT.musicSrc === 'synth' ? 'on' : ''}">SYNTH</button>
+    <button id="musicLoad">LOAD MUSIC</button><button id="musicClear">X</button></div></div>
   <div class="optRow"><span>SOUND EFFECTS</span><input type="range" min="0" max="1" step="0.05" data-range="sfx" value="${OPT.sfx}"></div>
   <div class="optRow"><span>RETRO PIXEL FILTER<small>low-res + dithering like the original</small></span>${onoff('retro')}</div>
   <div class="optRow"><span>ITEM POOL<small>CLASSIC = 5 · D.O.N. = 9 · ALL = 36 items</small></span>${seg('pool', [['classic', 'CLASSIC'], ['don', 'D.O.N.'], ['all', 'ALL']])}</div>
@@ -3235,8 +4190,19 @@ function openOptions(onClose) {
     if (key === 'retro') resize();
     if (key === 'hud') updateHud();
     if (key === 'dealerModel') applyDealerModel();
+    if (key === 'musicSrc') MUSIC.restart();
   };
   body.oninput = e => { const r = e.target.dataset.range; if (!r) return; OPT[r] = +e.target.value; saveOpt(); SND.applyVolumes(); };
+  $('#musicLoad').onclick = e => { e.stopPropagation(); $('#musicFile').click(); };
+  $('#musicClear').onclick = async e => {
+    e.stopPropagation(); await MUSIC_DB.clear();
+    MUSIC.custom = null; MUSIC.el = null; MUSIC.customName = ''; MUSIC.restart(); refreshMusicStatus();
+  };
+  refreshMusicStatus();
+}
+function refreshMusicStatus() {
+  const el = document.getElementById('musicStatus'); if (!el) return;
+  el.textContent = MUSIC.customName ? `loaded: ${MUSIC.customName} (looped)` : 'no mp3 loaded - put general-release.mp3 next to the html or press LOAD MUSIC';
 }
 let THUMBS = null;
 function makeThumbs() {
@@ -3395,6 +4361,12 @@ function initInput() {
   $('#aimSelf').onclick = () => offerInput('aim', { target: 'self' });
   $('#pauseBtn').onclick = () => { S.blip(700); setPaused(!clock.paused); };
   $('#panelBack').onclick = () => { S.blip(500); closePanel(); };
+  $('#musicFile').addEventListener('change', async e => {
+    const f = e.target.files && e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    const st = document.getElementById('musicStatus'); if (st) st.textContent = 'loading ' + f.name + '...';
+    try { await importMusicFile(f); } catch (err) { if (st) st.textContent = 'could not read that file'; console.warn(err); }
+  });
   addEventListener('keydown', e => {
     if (!$('#waiver').classList.contains('hidden')) return;
     if (e.key === 'Escape') { if (G.inGame && $('#choice').classList.contains('hidden')) setPaused(!clock.paused); else if (!$('#panel').classList.contains('hidden')) closePanel(); return; }
@@ -3446,11 +4418,12 @@ function resetScene() {
   W.case.visible = false; W.boxP.visible = false; W.boxD.visible = false; W.paper.visible = false;
   W.bath.visible = false; W.bathLight.visible = false; W.bathDoor.rotation.y = 0;
   W.slotMarkers.player.forEach(m => { m.visible = false; }); W.grid.visible = false;
-  W.gun.position.copy(POSE.gunTable.pos); W.gun.quaternion.copy(POSE.gunTable.quat); setSawed(false, true);
+  resetFx();
+  W.gunRig.position.copy(POSE.gunTable.pos); W.gunRig.quaternion.copy(POSE.gunTable.quat); setSawed(false, true);
   W.gun.userData.pump.position.x = 0.3;
   W.dealer.root.visible = true; W.dealer.gone = false; W.dealer.root.position.z = W.dealer.baseZ; setDealerCrushed(false);
   W.dealer.head.rotation.set(0, 0, 0); W.dealer.head.position.z = W.dealer.headZ;
-  W.dealer.hands.forEach((h, i) => h.position.copy(W.dealer.rest[i]));
+  W.dealer.hands.forEach((h, i) => { h.position.copy(W.dealer.rest[i]); h.userData.carry = null; h.userData.busy = false; });
   G.dealerHolding = false; G.shells = []; G.gun = { saw: false, powder: false, burst: false };
   G.lampPower = 1;
   post.flash = 0; post.red = 0;
@@ -3564,14 +4537,12 @@ function initMenu() {
 // =====================================================================
 let lastT = performance.now(), lastDisp = 0, flickT = 0;
 G.lampFlicker = 0;
-function frame(now) {
-  requestAnimationFrame(frame);
-  const rdt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
+function simulate(rdt, now) {
   stepClock(rdt);
   const dt = clock.paused ? 0 : rdt * clock.scale;
   const t = clock.t;
 
-  // lamp flicker
+  // stage light flicker
   if (Math.random() < dt * 0.3) flickT = rand(0.04, 0.2);
   flickT -= dt;
   if (G.lampFlicker > 0) G.lampFlicker -= dt;
@@ -3583,43 +4554,41 @@ function frame(now) {
   W.fixtures.forEach(fx => fx.userData.lens.material.color.setRGB(0.2 + 0.8 * f, 0.18 + 0.76 * f, 0.15 + 0.7 * f));
   if (W.bath.visible) { const bf = Math.random() < 0.03 ? 0.2 : 1; W.bathLight.intensity = 6 * bf; W.bathTube.material.color.setScalar(0.3 + 0.7 * bf); }
 
-  // dealer + held gun
-  W.gun.updateMatrixWorld();
-  if (G.dealerHolding) {
-    W.dealer.hands[0].position.copy(W.gun.localToWorld(V3(-0.04, -0.045, 0)));
-    W.dealer.hands[1].position.copy(W.gun.localToWorld(V3(0.29, -0.035, 0)));
-  }
+  updateFx(dt, t, rdt);
+  updateHands();
   W.dealer.root.updateMatrixWorld(); W.dealer.hands.forEach(h => h.updateMatrixWorld());
-  updateDealerRig(t);
+  updateDealerRig(t, dt);
   updateParticles(dt);
   W.muzzle.intensity *= Math.pow(0.0004, dt);
   W.flashSprite.material.opacity *= Math.pow(0.00005, dt);
   W.flashSprite.scale.setScalar(0.25 + W.flashSprite.material.opacity * 0.25);
-
-  // camera sway / shake
-  const sw = swayObj;
-  const allow = sw.enabled && pointer.type === 'mouse' && pointer.has && !clock.paused;
-  sw.tYaw = allow ? -pointer.nx * 0.09 : 0; sw.tPitch = allow ? -pointer.ny * 0.06 : 0;
-  sw.yaw += (sw.tYaw - sw.yaw) * Math.min(1, rdt * 3); sw.pitch += (sw.tPitch - sw.pitch) * Math.min(1, rdt * 3);
-  sw.shake = Math.max(0, sw.shake - rdt * 2.2);
-  const sk = sw.shake * sw.shake * 0.05;
-  camera.rotation.set(sw.pitch + (Math.random() - 0.5) * sk, sw.yaw + (Math.random() - 0.5) * sk, (Math.random() - 0.5) * sk * 0.5);
   if (!G.inGame) { camRig.position.x = POSE.menu.pos.x + Math.sin(now / 4000) * 0.04; }
 
   updateHover();
-  if (G.displayOn && (G.P.cut || G.D.cut) && now - lastDisp > 250) { drawDisplay(); lastDisp = now; }
-
+  if (W.dispGlitch > 0) W.dispGlitch -= dt;
+  if (G.displayOn && (G.P.cut || G.D.cut || W.dispGlitch > 0 || W.dispAnimUntil > t) && now - lastDisp > 90) { drawDisplay(); lastDisp = now; }
   const u = post.mat.uniforms;
   u.uTime.value = now / 1000; u.uFlash.value = post.flash; u.uFade.value = post.fade; u.uRed.value = post.red; u.uExposure.value = post.exposure;
+}
+function frame(now) {
+  requestAnimationFrame(frame);
+  const rdt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
+  simulate(rdt, now);
   renderer.setRenderTarget(rt); renderer.render(scene, camera);
   renderer.setRenderTarget(null); renderer.render(postScene, postCam);
+}
+// test helper: advance game time deterministically (keeps async flows running)
+async function advance(ms, step = 16) {
+  const was = clock.paused; clock.paused = false;
+  for (let tt = 0; tt < ms; tt += step) { simulate(step / 1000 / clock.scale, performance.now()); await new Promise(r => setTimeout(r, 0)); }
+  clock.paused = was;
 }
 
 // =====================================================================
 //  BOOT
 // =====================================================================
 function boot() {
-  buildTextures(); buildMaterials(); buildWorld();
+  buildTextures(); buildMaterials(); buildWorld(); initAnim();
   W.dealer.head.userData.target = { type: 'aimDealer' };
   initWaiver(); initInput(); initMenu();
   resize(); addEventListener('resize', resize);
@@ -3632,7 +4601,7 @@ function boot() {
   $('#menu').classList.remove('hidden');
   loadDealerModel().then(m => { if (!m) return; W.dealer.model = m; W.dealer.head.add(m.normal, m.crush); applyDealerModel(); })
     .catch(e => console.warn('dealer model not loaded, using built-in head:', e));
-  window.__BR = { G, W, OPT, clock, startGame, toMenu, ITEMS, offerInput, camRig, POSE, poseLook, V3, THREE, get waiter() { return inputWaiter; } };
+  window.__BR = { G, W, OPT, clock, startGame, toMenu, ITEMS, offerInput, camRig, POSE, poseLook, V3, THREE, MUSIC, SND, FX, advance, playItemAnim, buildItem, scene, A, presentItemFx, fn: { playerPickupGun, playerAim, fire, gunToTable, calmPlayer, dealerPickupGun, dealerAim, dealerPutDownGun, showShellsFx, rackAnim, dealerVanishFx, dealerReturnFx, playerHitFx, playerRecoverFx, useItemFromSlot, spawnItemObj, setItemTarget, drawDisplay, genShells, distributeItems, dealerReact, resetScene }, get waiter() { return inputWaiter; } };
   if (BOT) { OPT.skipIntro = params.get('intro') !== '1'; OPT.pool = params.get('pool') || 'all'; OPT.autoPlace = false; startGame(params.get('mode') || 'story'); }
 }
 boot();

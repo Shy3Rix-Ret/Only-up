@@ -230,7 +230,7 @@ const store = {
 
 const OPT = Object.assign({
   music: 0.7, sfx: 0.9, retro: true, hud: false, pool: 'all', skipIntro: false,
-  voice: true, autoPlace: false, shake: true, dealerModel: 'file', musicSrc: 'file',
+  voice: true, autoPlace: false, shake: true, dealerModel: 'file', musicSrc: 'file', deafen: true, ai: 'smart',
 }, store.get('opt', {}));
 const saveOpt = () => store.set('opt', OPT);
 
@@ -290,11 +290,21 @@ const SND = {
     if (this.ctx) { if (this.ctx.state !== 'running') this.ctx.resume(); return; }
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
-    const ctx = this.ctx = new AC();
+    this.build(new AC());
+    this.applyVolumes();
+    MUSIC.attach(this);
+    loadCustomMusic();
+  },
+  // the whole mixer graph (also used to render effects offline for level checks)
+  build(ctx) {
+    this.ctx = ctx;
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -10; comp.ratio.value = 5; comp.attack.value = 0.002; comp.release.value = 0.2;
     this.master = ctx.createGain(); this.master.gain.value = 0.85;
-    this.master.connect(comp); comp.connect(ctx.destination);
+    this.deaf = ctx.createBiquadFilter(); this.deaf.type = 'lowpass'; this.deaf.frequency.value = 20000; this.deaf.Q.value = 0.4;
+    this.postBus = ctx.createGain();
+    const clip = ctx.createWaveShaper(); clip.curve = this.clipCurve(); clip.oversample = 'none';
+    this.master.connect(this.deaf); this.deaf.connect(this.postBus); this.postBus.connect(comp); comp.connect(clip); clip.connect(ctx.destination);
     this.sfx = ctx.createGain(); this.sfx.connect(this.master);
     // music chain: bus -> muffle lowpass -> gain
     this.musIn = ctx.createGain();
@@ -302,8 +312,8 @@ const SND = {
     this.mus = ctx.createGain();
     this.musIn.connect(this.muffle); this.muffle.connect(this.mus); this.mus.connect(this.master);
     // reverb
-    this.rev = ctx.createConvolver(); this.rev.buffer = this.impulse(2.8, 2.4);
-    const revOut = ctx.createGain(); revOut.gain.value = 0.55; this.rev.connect(revOut); revOut.connect(this.master);
+    this.rev = ctx.createConvolver(); this.rev.buffer = this.impulse(2.3, 2.7, true);
+    const revOut = ctx.createGain(); revOut.gain.value = 0.6; this.rev.connect(revOut); revOut.connect(this.master);
     this.sfxRev = ctx.createGain(); this.sfxRev.connect(this.rev);
     this.musRev = ctx.createGain(); this.musRev.connect(this.muffle);
     const musRevConv = ctx.createConvolver(); musRevConv.buffer = this.impulse(2.2, 3);
@@ -320,18 +330,32 @@ const SND = {
     // distortion curve
     this.distCurve = this.makeCurve(40);
     this.softCurve = this.makeCurve(8);
-    this.applyVolumes();
-    MUSIC.attach(this);
-    loadCustomMusic();
   },
-  makeCurve(k) {
-    const n = 2048, c = new Float32Array(n);
-    for (let i = 0; i < n; i++) { const x = i * 2 / n - 1; c[i] = (1 + k) * x / (1 + k * Math.abs(x)); }
+  clipCurve() { // linear up to 0.75, then a smooth knee into 0.98
+    const n = 4097, c = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = i * 2 / (n - 1) - 1, a = Math.abs(x); c[i] = Math.sign(x) * (a < 0.75 ? a : 0.75 + 0.23 * Math.tanh((a - 0.75) / 0.23)); }
     return c;
   },
-  impulse(sec, decay) {
-    const ctx = this.ctx, len = Math.floor(ctx.sampleRate * sec), b = ctx.createBuffer(2, len, ctx.sampleRate);
-    for (let c = 0; c < 2; c++) { const d = b.getChannelData(c); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay); }
+  makeCurve(k) {
+    const n = 2049, c = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = i * 2 / (n - 1) - 1; c[i] = (1 + k) * x / (1 + k * Math.abs(x)); }
+    return c;
+  },
+  // small concrete room: early reflections + damped exponential tail
+  impulse(sec, decay, room = false) {
+    const ctx = this.ctx, rate = ctx.sampleRate, len = Math.floor(rate * sec), b = ctx.createBuffer(2, len, rate);
+    for (let c = 0; c < 2; c++) {
+      const d = b.getChannelData(c); let lp = 0;
+      for (let i = 0; i < len; i++) {
+        const k = i / len, a = room ? 0.1 + 0.85 * k : 0;
+        lp = lp * a + (Math.random() * 2 - 1) * (1 - a);
+        d[i] = lp * Math.pow(1 - k, decay) * (room ? Math.min(1, i / (rate * 0.012)) : 1);
+      }
+      if (room) [0.006, 0.0105, 0.0165, 0.023, 0.0315, 0.041, 0.056, 0.071].forEach((tt, j) => {
+        const idx = Math.floor((tt + (c ? 0.0013 * (j + 1) : 0)) * rate);
+        if (idx < len) d[idx] += (0.75 - j * 0.07) * (j % 2 ? -1 : 1);
+      });
+    }
     return b;
   },
   applyVolumes() {
@@ -349,6 +373,26 @@ const SND = {
     const target = !on ? 20000 : custom ? (G.inGame ? 1200 : 20000) : 380;
     f.exponentialRampToValueAtTime(target, t + sec);
   },
+  // hearing damage after a shot: everything goes dull, a tinnitus tone rings out
+  deafen(amount = 1, sec = 2.6, delay = 0) {
+    if (!this.ctx || !OPT.deafen) return;
+    const f = this.deaf.frequency, t = this.ctx.currentTime + delay, low = 20000 * Math.pow(450 / 20000, amount);
+    f.cancelScheduledValues(t); f.setValueAtTime(Math.max(low, Math.min(20000, f.value)), t);
+    f.exponentialRampToValueAtTime(low, t + 0.025); f.setValueAtTime(low, t + 0.3 * amount); f.exponentialRampToValueAtTime(20000, t + sec);
+    this.tone({ type: 'sine', f: 3900 + Math.random() * 500, dur: sec + 0.8, vol: 0.028 * amount, a: 0.3, delay: delay + 0.06, dest: this.postBus });
+  },
+  // ---- routing: pan / distance gain / reverb for sounds fired through S.at(pos) ----
+  curPan: 0, curGain: 1, curRev: 0,
+  route(node, o) {
+    const ctx = this.ctx; let n = node;
+    const pan = o.pan ?? (o.dest ? 0 : this.curPan);
+    if (pan && ctx.createStereoPanner) { const p = ctx.createStereoPanner(); p.pan.value = clamp(pan, -1, 1); n.connect(p); n = p; }
+    const cg = o.dest ? 1 : this.curGain;
+    if (cg !== 1) { const g = ctx.createGain(); g.gain.value = cg; n.connect(g); n = g; }
+    n.connect(o.dest || this.sfx);
+    const rev = (o.rev || 0) + (o.dest ? 0 : this.curRev);
+    if (rev > 0) { const r = ctx.createGain(); r.gain.value = rev; n.connect(r); r.connect(o.revDest || this.sfxRev); }
+  },
   // ---- primitives ----
   tone(o) {
     const ctx = this.ctx; if (!ctx) return;
@@ -358,14 +402,13 @@ const SND = {
     if (o.f1) os.frequency.exponentialRampToValueAtTime(Math.max(1, o.f1), t + (o.slide ?? dur));
     if (o.detune) os.detune.value = o.detune;
     const g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(v, t + a);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(Math.max(0.0002, v), t + a);
     if (o.hold) g.gain.setValueAtTime(v, t + a + o.hold);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    os.connect(g); let out = g;
-    if (o.dist) { const ws = ctx.createWaveShaper(); ws.curve = this.distCurve; out.connect(ws); out = ws; }
+    if (o.dist) { const ws = ctx.createWaveShaper(); ws.curve = this.distCurve; os.connect(ws); ws.connect(g); } else os.connect(g);
+    let out = g;
     if (o.filter) { const fl = ctx.createBiquadFilter(); fl.type = o.filter; fl.frequency.value = o.ff || 1000; fl.Q.value = o.q || 1; out.connect(fl); out = fl; }
-    out.connect(o.dest || this.sfx);
-    if (o.rev) { const s = ctx.createGain(); s.gain.value = o.rev; out.connect(s); s.connect(o.revDest || this.sfxRev); }
+    this.route(out, o);
     os.start(t); os.stop(t + dur + 0.05);
     return os;
   },
@@ -378,13 +421,12 @@ const SND = {
     if (o.f1) fl.frequency.exponentialRampToValueAtTime(o.f1, t + (o.slide ?? dur));
     fl.Q.value = o.q ?? 1;
     const g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(v, t + a);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(Math.max(0.0002, v), t + a);
     if (o.hold) g.gain.setValueAtTime(v, t + a + o.hold);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(fl); fl.connect(g); let out = g;
-    if (o.dist) { const ws = ctx.createWaveShaper(); ws.curve = this.distCurve; out.connect(ws); out = ws; }
-    out.connect(o.dest || this.sfx);
-    if (o.rev) { const s = ctx.createGain(); s.gain.value = o.rev; out.connect(s); s.connect(o.revDest || this.sfxRev); }
+    src.connect(fl);
+    if (o.dist) { const ws = ctx.createWaveShaper(); ws.curve = this.distCurve; const pre = ctx.createGain(); pre.gain.value = 3; fl.connect(pre); pre.connect(ws); ws.connect(g); } else fl.connect(g);
+    this.route(g, o);
     src.start(t, Math.random() * 1.5); src.stop(t + dur + 0.05);
   },
   fm(o) { // metallic FM hit
@@ -395,172 +437,63 @@ const SND = {
     mg.gain.setValueAtTime(o.f * (o.index || 3), t); mg.gain.exponentialRampToValueAtTime(1, t + dur);
     mod.connect(mg); mg.connect(car.frequency);
     g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.vol ?? 0.2, t + 0.003); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    car.connect(g); g.connect(o.dest || this.sfx);
-    if (o.rev) { const s = ctx.createGain(); s.gain.value = o.rev; g.connect(s); s.connect(o.revDest || this.sfxRev); }
+    car.connect(g); this.route(g, o);
     car.start(t); mod.start(t); car.stop(t + dur + 0.05); mod.stop(t + dur + 0.05);
   },
-};
-
-// ---------- sound effects ----------
-const S = {
-  shot() {
-    SND.noise({ type: 'lowpass', f: 9000, f1: 260, slide: 0.55, dur: 1.1, vol: 1.0, q: 0.4, dist: true, rev: 0.9 });
-    SND.noise({ type: 'highpass', f: 2500, dur: 0.1, vol: 0.7 });
-    SND.tone({ type: 'sine', f: 120, f1: 28, dur: 0.6, vol: 1.0 });
-    SND.tone({ type: 'sawtooth', f: 70, f1: 24, dur: 0.4, vol: 0.5, filter: 'lowpass', ff: 260 });
-    SND.tone({ type: 'sine', f: 3900, dur: 2.6, vol: 0.018, a: 0.4, delay: 0.25 }); // ear ringing
-  },
-  click() {
-    SND.noise({ type: 'bandpass', f: 3600, q: 4, dur: 0.035, vol: 0.55 });
-    SND.tone({ type: 'square', f: 1900, dur: 0.025, vol: 0.06, delay: 0.004 });
-    SND.noise({ type: 'bandpass', f: 800, q: 2, dur: 0.09, vol: 0.25, delay: 0.02 });
-  },
-  rack(d = 0) {
-    [0, 0.2].forEach((o, i) => {
-      SND.noise({ type: 'bandpass', f: i ? 2600 : 1600, f1: i ? 1500 : 2800, q: 5, dur: 0.13, vol: 0.4, delay: d + o });
-      SND.noise({ type: 'bandpass', f: 4300, q: 7, dur: 0.035, vol: 0.6, delay: d + o + 0.11 });
-      SND.tone({ type: 'square', f: 240, f1: 90, dur: 0.07, vol: 0.12, delay: d + o + 0.11 });
+  // struck object: a few decaying partials (metal / glass / wood / plastic ...)
+  modal(o) {
+    const ctx = this.ctx; if (!ctx) return;
+    const t = (o.at ?? ctx.currentTime) + (o.delay || 0), f = o.f, ratios = o.ratios || [1, 2.76, 5.4, 8.93];
+    const decay = o.decay ?? 0.3, vol = o.vol ?? 0.2, bus = ctx.createGain();
+    ratios.forEach((r, i) => {
+      const fr = f * r * (1 + (Math.random() - 0.5) * (o.inharm ?? 0.012));
+      if (fr > 16000) return;
+      const os = ctx.createOscillator(); os.frequency.value = fr;
+      const g = ctx.createGain(), amp = (o.amps ? o.amps[i] : 1 / (1 + i * 0.9)) * vol, d = decay * (o.decays ? o.decays[i] : 1 / (1 + i * 0.7));
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(Math.max(0.0002, amp), t + 0.0015); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+      os.connect(g); g.connect(bus); os.start(t); os.stop(t + d + 0.05);
     });
+    this.route(bus, o);
+    if ((o.hit ?? 0.6) > 0) this.noise({ at: t, type: 'bandpass', f: Math.min(9000, f * 2.5), q: 1.1, dur: 0.012, vol: vol * (o.hit ?? 0.6), pan: o.pan, dest: o.dest });
   },
-  load(d = 0) {
-    SND.noise({ type: 'bandpass', f: 3100, q: 6, dur: 0.05, vol: 0.5, delay: d });
-    SND.tone({ type: 'triangle', f: 520, f1: 180, dur: 0.09, vol: 0.16, delay: d });
-    SND.noise({ type: 'bandpass', f: 6500, q: 12, dur: 0.18, vol: 0.07, delay: d + 0.02 });
+  // formant voice (the dealer's murmur, laughs, gulps, sighs)
+  voice(o) {
+    const ctx = this.ctx; if (!ctx) return;
+    const t = (o.at ?? ctx.currentTime) + (o.delay || 0), dur = o.dur ?? 0.12, vol = o.vol ?? 0.08, f0 = o.f0 || 110;
+    const F = { a: [730, 1090, 2440], e: [530, 1840, 2480], i: [300, 2200, 2900], o: [500, 820, 2400], u: [320, 800, 2240], ah: [660, 1200, 2500] }[o.vowel || 'e'];
+    const src = ctx.createOscillator(); src.type = 'sawtooth';
+    src.frequency.setValueAtTime(f0, t); if (o.f1) src.frequency.exponentialRampToValueAtTime(o.f1, t + dur);
+    const vib = ctx.createOscillator(), vg = ctx.createGain(); vib.frequency.value = 5 + Math.random() * 3; vg.gain.value = f0 * (o.wobble ?? 0.02); vib.connect(vg); vg.connect(src.frequency);
+    const pre = ctx.createGain(); src.connect(pre);
+    let nz = null;
+    if (o.breath) { nz = ctx.createBufferSource(); nz.buffer = this.noiseBuf; nz.loop = true; const ng = ctx.createGain(); ng.gain.value = o.breath; nz.connect(ng); ng.connect(pre); }
+    const sum = ctx.createGain();
+    F.forEach((ff, i) => { const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = ff * (o.shift || 1); bp.Q.value = [5, 8, 11][i]; const g = ctx.createGain(); g.gain.value = [1.6, 0.9, 0.45][i]; pre.connect(bp); bp.connect(g); g.connect(sum); });
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, t); env.gain.exponentialRampToValueAtTime(vol, t + (o.a ?? 0.02)); env.gain.setValueAtTime(vol, t + dur * 0.55); env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    let vo = sum;
+    if (o.grit) { const ws = ctx.createWaveShaper(); ws.curve = this.softCurve; const gg = ctx.createGain(); gg.gain.value = 0.6; sum.connect(ws); ws.connect(gg); vo = gg; }
+    vo.connect(env); this.route(env, o);
+    src.start(t); vib.start(t); src.stop(t + dur + 0.05); vib.stop(t + dur + 0.05);
+    if (nz) { nz.start(t, Math.random()); nz.stop(t + dur + 0.05); }
   },
-  shellDrop(d = 0) {
-    [0, 0.13, 0.22, 0.28].forEach((o, i) => {
-      SND.tone({ type: 'triangle', f: 900 - i * 60, f1: 600, dur: 0.05, vol: 0.12 / (i + 1), delay: d + o });
-      SND.noise({ type: 'bandpass', f: 2400, q: 3, dur: 0.03, vol: 0.18 / (i + 1), delay: d + o });
-    });
+  // many tiny random grains (crackle, fizz, rattles, paper)
+  crackle(o) {
+    const dur = o.dur || 0.5, n = Math.min(70, Math.round(dur * (o.density || 30)));
+    for (let i = 0; i < n; i++) this.noise({ at: o.at, delay: (o.delay || 0) + Math.random() * dur, type: 'bandpass', f: (o.f || 3000) * (0.6 + Math.random() * 0.8), q: o.q ?? 4, dur: o.grain || 0.012, vol: (o.vol || 0.1) * (0.25 + Math.random() * 0.75), pan: o.pan, dest: o.dest });
   },
-  thud(d = 0, vol = 0.35) { SND.tone({ type: 'sine', f: 140, f1: 60, dur: 0.14, vol, delay: d }); SND.noise({ type: 'lowpass', f: 900, dur: 0.07, vol: vol * 0.5, delay: d }); },
-  pickup() { SND.noise({ type: 'bandpass', f: 500, f1: 1600, q: 1, dur: 0.25, vol: 0.18 }); SND.fm({ f: 380, ratio: 3.1, index: 2, dur: 0.18, vol: 0.06 }); },
-  whoosh(d = 0) { SND.noise({ type: 'bandpass', f: 300, f1: 1800, slide: 0.18, q: 0.8, dur: 0.32, vol: 0.2, delay: d }); },
-  glass() { this.whoosh(); SND.tone({ type: 'sine', f: 1200, f1: 1800, dur: 0.3, vol: 0.03, delay: 0.1 }); SND.fm({ f: 2200, ratio: 1.5, index: 1, dur: 0.5, vol: 0.05, delay: 0.25, rev: 0.4 }); },
-  cig() {
-    SND.noise({ type: 'bandpass', f: 5000, q: 8, dur: 0.03, vol: 0.4 }); // flint
-    SND.noise({ type: 'bandpass', f: 1300, q: 1, dur: 0.35, vol: 0.25, delay: 0.05 }); // flame
-    SND.noise({ type: 'lowpass', f: 700, f1: 1400, q: 0.5, a: 0.5, dur: 1.4, vol: 0.18, delay: 0.5 }); // inhale
-    for (let i = 0; i < 8; i++) SND.noise({ type: 'highpass', f: 6000, dur: 0.01, vol: 0.2 * Math.random(), delay: 0.6 + Math.random() * 1.0 });
-    SND.noise({ type: 'lowpass', f: 1600, f1: 500, a: 0.1, dur: 1.2, vol: 0.12, delay: 2.0 }); // exhale
-  },
-  beer() {
-    SND.noise({ type: 'highpass', f: 2800, a: 0.004, dur: 0.35, vol: 0.45 }); // psst
-    SND.tone({ type: 'square', f: 1200, dur: 0.02, vol: 0.05 });
-    for (let i = 0; i < 3; i++) {
-      SND.tone({ type: 'sine', f: 190, f1: 90, dur: 0.18, vol: 0.28, delay: 0.7 + i * 0.32 });
-      SND.noise({ type: 'lowpass', f: 400, dur: 0.16, vol: 0.12, delay: 0.7 + i * 0.32 });
-    }
-    SND.tone({ type: 'sawtooth', f: 90, f1: 70, dur: 0.5, vol: 0.05, delay: 1.9, filter: 'lowpass', ff: 300 });
-  },
-  saw() {
-    for (let i = 0; i < 5; i++) {
-      SND.noise({ type: 'bandpass', f: i % 2 ? 3200 : 2400, q: 3, a: 0.04, dur: 0.17, vol: 0.35, delay: i * 0.2 });
-      SND.tone({ type: 'sawtooth', f: i % 2 ? 170 : 140, dur: 0.16, vol: 0.05, delay: i * 0.2, filter: 'bandpass', ff: 2000, q: 2 });
-    }
-    SND.fm({ f: 500, ratio: 2.3, index: 6, dur: 0.5, vol: 0.12, delay: 1.05, rev: 0.3 });
-    S.thud(1.1, 0.2);
-  },
-  cuffs() {
-    SND.fm({ f: 1400, ratio: 2.9, index: 3, dur: 0.35, vol: 0.12 });
-    SND.fm({ f: 1750, ratio: 2.4, index: 3, dur: 0.3, vol: 0.1, delay: 0.12 });
-    for (let i = 0; i < 6; i++) SND.noise({ type: 'bandpass', f: 5200, q: 10, dur: 0.02, vol: 0.3, delay: 0.35 + i * 0.045 });
-  },
-  phone() {
-    SND.noise({ type: 'bandpass', f: 2000, q: 4, dur: 0.04, vol: 0.3 });
-    SND.tone({ type: 'sine', f: 697, dur: 0.12, vol: 0.06, delay: 0.2 }); SND.tone({ type: 'sine', f: 1209, dur: 0.12, vol: 0.06, delay: 0.2 });
-    SND.tone({ type: 'sine', f: 852, dur: 0.12, vol: 0.06, delay: 0.38 }); SND.tone({ type: 'sine', f: 1477, dur: 0.12, vol: 0.06, delay: 0.38 });
-    SND.noise({ type: 'bandpass', f: 1800, q: 0.6, a: 0.1, dur: 1.8, vol: 0.05, delay: 0.6 });
-  },
-  inverter() {
-    SND.tone({ type: 'sawtooth', f: 180, f1: 1400, slide: 0.35, dur: 0.4, vol: 0.12, filter: 'lowpass', ff: 3000 });
-    SND.tone({ type: 'square', f: 1400, f1: 200, slide: 0.3, dur: 0.35, vol: 0.06, delay: 0.38 });
-    SND.noise({ type: 'bandpass', f: 4000, q: 2, dur: 0.12, vol: 0.2, delay: 0.37 });
-  },
-  inject() {
-    SND.noise({ type: 'bandpass', f: 4200, q: 8, dur: 0.03, vol: 0.5 });
-    SND.noise({ type: 'highpass', f: 3000, a: 0.02, dur: 0.3, vol: 0.12, delay: 0.03 });
-    this.heart(0.4, 1.4);
-  },
-  heart(d = 0, speed = 1) {
-    for (let i = 0; i < 2; i++) {
-      SND.tone({ type: 'sine', f: 70, f1: 38, dur: 0.22, vol: 0.55, delay: d + i * 0.62 / speed });
-      SND.tone({ type: 'sine', f: 62, f1: 34, dur: 0.2, vol: 0.4, delay: d + i * 0.62 / speed + 0.18 / speed });
-    }
-  },
-  pills() { for (let i = 0; i < 12; i++) SND.tone({ type: 'triangle', f: rand(2600, 4200), dur: 0.03, vol: 0.05, delay: i * 0.035 + Math.random() * 0.02 }); SND.tone({ type: 'sine', f: 170, f1: 100, dur: 0.2, vol: 0.18, delay: 0.7 }); },
-  coin() { SND.fm({ f: 2100, ratio: 1.41, index: 1.2, dur: 0.9, vol: 0.08, rev: 0.4 }); for (let i = 0; i < 7; i++) SND.tone({ type: 'sine', f: 3200, dur: 0.04, vol: 0.04 / (1 + i * 0.3), delay: 0.9 + i * (0.12 - i * 0.012) }); },
-  dice() { for (let i = 0; i < 9; i++) SND.noise({ type: 'bandpass', f: rand(1500, 3200), q: 5, dur: 0.03, vol: 0.3 / (1 + i * 0.25), delay: i * rand(0.05, 0.1) }); },
-  zap(d = 0) {
-    SND.tone({ type: 'sine', f: 300, f1: 3200, slide: 1.1, dur: 1.15, vol: 0.06, delay: d });
-    SND.noise({ type: 'bandpass', f: 1800, q: 0.8, a: 0.004, dur: 0.35, vol: 0.6, delay: d + 1.15, dist: true });
-    SND.tone({ type: 'square', f: 60, dur: 0.3, vol: 0.2, delay: d + 1.15 });
-  },
-  blip(f = 880, d = 0) { SND.tone({ type: 'square', f, dur: 0.05, vol: 0.05, delay: d }); },
-  type() { SND.tone({ type: 'square', f: rand(240, 300), dur: 0.035, vol: 0.035 }); },
-  door() {
-    SND.tone({ type: 'sine', f: 90, f1: 35, dur: 0.5, vol: 0.9 }); SND.noise({ type: 'lowpass', f: 1200, dur: 0.3, vol: 0.6, rev: 0.6 });
-    SND.tone({ type: 'sawtooth', f: 180, f1: 120, slide: 0.9, dur: 1.0, vol: 0.05, delay: 0.25, filter: 'bandpass', ff: 900, q: 6 });
-    S.thud(0.9, 0.5);
-  },
-  box() { SND.noise({ type: 'bandpass', f: 700, q: 1.5, dur: 0.25, vol: 0.3 }); SND.fm({ f: 900, ratio: 2.2, index: 2, dur: 0.15, vol: 0.08 }); SND.noise({ type: 'bandpass', f: 1400, f1: 3000, q: 1, dur: 0.4, vol: 0.12, delay: 0.1 }); },
-  place() { SND.tone({ type: 'triangle', f: 380, f1: 200, dur: 0.08, vol: 0.18 }); SND.noise({ type: 'bandpass', f: 1600, q: 2, dur: 0.04, vol: 0.15 }); },
-  error() { SND.tone({ type: 'square', f: 110, dur: 0.18, vol: 0.08 }); SND.tone({ type: 'square', f: 104, dur: 0.18, vol: 0.08, delay: 0.02 }); },
-  power() { [0, 0.07, 0.14].forEach((d, i) => SND.tone({ type: 'square', f: 600 + i * 300, dur: 0.05, vol: 0.05, delay: d })); SND.tone({ type: 'sine', f: 60, dur: 0.6, vol: 0.05 }); },
-  metal(d = 0) { SND.fm({ f: rand(300, 500), ratio: 2.71, index: 5, dur: 0.5, vol: 0.12, delay: d, rev: 0.4 }); },
-  zapSmall() { SND.noise({ type: 'bandpass', f: 3000, q: 1, dur: 0.25, vol: 0.35, dist: true }); SND.tone({ type: 'sawtooth', f: 90, dur: 0.25, vol: 0.12 }); },
-  tape() { SND.noise({ type: 'bandpass', f: 900, f1: 2500, q: 2, dur: 0.5, vol: 0.3 }); SND.noise({ type: 'highpass', f: 3500, dur: 0.12, vol: 0.2, delay: 0.52 }); },
-  bottle() { SND.fm({ f: 700, ratio: 1.5, index: 0.8, dur: 0.3, vol: 0.08 }); SND.noise({ type: 'bandpass', f: 500, f1: 300, q: 3, a: 0.2, dur: 1.0, vol: 0.18, delay: 0.3 }); for (let i = 0; i < 3; i++) SND.tone({ type: 'sine', f: 180, f1: 100, dur: 0.16, vol: 0.2, delay: 0.5 + i * 0.28 }); },
-  magic() { [0, 0.08, 0.16, 0.24, 0.32].forEach((d, i) => SND.tone({ type: 'sine', f: 880 * Math.pow(1.26, i), dur: 0.6, vol: 0.04, delay: d, rev: 0.6 })); },
-  bad() { SND.tone({ type: 'sawtooth', f: 160, f1: 60, dur: 0.8, vol: 0.08, filter: 'lowpass', ff: 600, rev: 0.4 }); },
-  paper() { SND.noise({ type: 'bandpass', f: 2600, q: 0.9, dur: 0.3, vol: 0.18 }); SND.noise({ type: 'bandpass', f: 3500, q: 1.2, dur: 0.2, vol: 0.12, delay: 0.2 }); },
-  pen() { for (let i = 0; i < 6; i++) SND.noise({ type: 'bandpass', f: rand(3000, 5000), q: 3, a: 0.02, dur: 0.1, vol: 0.12, delay: i * 0.1 }); },
-  cash() { SND.fm({ f: 1600, ratio: 1.5, index: 1, dur: 0.7, vol: 0.08, rev: 0.4 }); SND.fm({ f: 2400, ratio: 1.5, index: 1, dur: 0.9, vol: 0.07, delay: 0.1, rev: 0.4 }); for (let i = 0; i < 10; i++) SND.noise({ type: 'bandpass', f: 3000, q: 2, dur: 0.04, vol: 0.12, delay: 0.3 + i * 0.05 }); },
-  laugh() {
-    for (let i = 0; i < 5; i++) {
-      const d = i * 0.16;
-      SND.tone({ type: 'sawtooth', f: 150 - i * 9, f1: 105 - i * 8, slide: 0.12, dur: 0.14, vol: 0.08, delay: d, filter: 'bandpass', ff: 650, q: 3, rev: 0.4 });
-      SND.noise({ type: 'bandpass', f: 900, q: 2.5, dur: 0.11, vol: 0.09, delay: d });
-    }
-  },
-  gasp() { SND.noise({ type: 'bandpass', f: 1100, f1: 2600, q: 1.2, a: 0.05, dur: 0.55, vol: 0.28 }); SND.tone({ type: 'sine', f: 220, f1: 330, dur: 0.4, vol: 0.04, delay: 0.05 }); },
-  clack(d = 0, v = 1) { SND.noise({ type: 'bandpass', f: 2600, q: 5, dur: 0.03, vol: 0.32 * v, delay: d }); SND.tone({ type: 'triangle', f: 720, f1: 380, dur: 0.05, vol: 0.09 * v, delay: d }); },
-  flame() { SND.noise({ type: 'bandpass', f: 5200, q: 8, dur: 0.03, vol: 0.45 }); SND.noise({ type: 'bandpass', f: 900, q: 0.8, a: 0.03, dur: 0.5, vol: 0.2, delay: 0.04 }); },
-  splash() { SND.noise({ type: 'bandpass', f: 1500, f1: 450, q: 0.8, dur: 0.5, vol: 0.32 }); for (let i = 0; i < 5; i++) SND.tone({ type: 'sine', f: rand(900, 1600), f1: 400, dur: 0.06, vol: 0.05, delay: 0.1 + i * 0.07 }); },
-  stab() { SND.noise({ type: 'highpass', f: 3000, dur: 0.05, vol: 0.4 }); SND.tone({ type: 'sine', f: 210, f1: 80, dur: 0.15, vol: 0.32 }); },
-  pour() { SND.noise({ type: 'bandpass', f: 3600, q: 1, a: 0.1, dur: 0.9, vol: 0.14 }); },
-  glint() { SND.tone({ type: 'sine', f: 2600, f1: 4200, dur: 0.35, vol: 0.05, rev: 0.5 }); SND.fm({ f: 3100, ratio: 1.5, index: 0.5, dur: 0.6, vol: 0.03, delay: 0.05, rev: 0.5 }); },
-  crush() { SND.noise({ type: 'bandpass', f: 1800, q: 1.5, dur: 0.18, vol: 0.38 }); SND.tone({ type: 'square', f: 300, f1: 120, dur: 0.1, vol: 0.06 }); },
-  cloth() { SND.noise({ type: 'bandpass', f: 700, f1: 1700, q: 0.7, dur: 0.35, vol: 0.22 }); },
-  snap() { SND.noise({ type: 'bandpass', f: 3000, q: 2, dur: 0.04, vol: 0.3 }); SND.noise({ type: 'bandpass', f: 1800, q: 1, dur: 0.12, vol: 0.12, delay: 0.03 }); },
-  exhale() { SND.noise({ type: 'lowpass', f: 1400, f1: 400, q: 0.5, a: 0.05, dur: 0.9, vol: 0.14 }); },
-  zapArc() { SND.noise({ type: 'bandpass', f: 4000, f1: 1500, q: 3, dur: 0.22, vol: 0.22, dist: true }); },
-  latch() { SND.fm({ f: 800, ratio: 3.3, index: 4, dur: 0.12, vol: 0.12 }); SND.fm({ f: 820, ratio: 3.3, index: 4, dur: 0.12, vol: 0.12, delay: 0.15 }); },
-};
-
-// ambient room tone
-const AMB = {
-  nodes: null,
-  start(kind = 'room') {
-    if (!SND.ctx) return; this.stop();
-    const ctx = SND.ctx, g = ctx.createGain(); g.gain.value = 0; g.connect(SND.sfx);
-    const src = ctx.createBufferSource(); src.buffer = SND.noiseBuf; src.loop = true;
-    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = kind === 'bath' ? 900 : 260;
-    const ng = ctx.createGain(); ng.gain.value = kind === 'bath' ? 0.05 : 0.08;
-    src.connect(lp); lp.connect(ng); ng.connect(g);
-    const o1 = ctx.createOscillator(); o1.frequency.value = kind === 'bath' ? 120 : 50; const og = ctx.createGain(); og.gain.value = kind === 'bath' ? 0.018 : 0.03;
-    o1.connect(og); og.connect(g);
-    const o2 = ctx.createOscillator(); o2.type = 'sawtooth'; o2.frequency.value = kind === 'bath' ? 240 : 100; const og2 = ctx.createGain(); og2.gain.value = 0.004;
-    const f2 = ctx.createBiquadFilter(); f2.type = 'lowpass'; f2.frequency.value = 400; o2.connect(f2); f2.connect(og2); og2.connect(g);
-    src.start(); o1.start(); o2.start();
-    g.gain.linearRampToValueAtTime(1, ctx.currentTime + 1.5);
-    this.nodes = { g, src, o1, o2 };
-  },
-  stop() {
-    if (!this.nodes || !SND.ctx) return;
-    const n = this.nodes, t = SND.ctx.currentTime; this.nodes = null;
-    n.g.gain.cancelScheduledValues(t); n.g.gain.setValueAtTime(n.g.gain.value, t); n.g.gain.linearRampToValueAtTime(0, t + 0.6);
-    [n.src, n.o1, n.o2].forEach(x => x.stop(t + 0.7));
+  // noise with an amplitude LFO (saw teeth, tape rip, zipper-like textures)
+  amNoise(o) {
+    const ctx = this.ctx; if (!ctx) return;
+    const t = (o.at ?? ctx.currentTime) + (o.delay || 0), dur = o.dur ?? 0.2, v = o.vol ?? 0.3;
+    const src = ctx.createBufferSource(); src.buffer = this.noiseBuf; src.loop = true;
+    const fl = ctx.createBiquadFilter(); fl.type = o.type || 'bandpass'; fl.frequency.setValueAtTime(o.f || 2000, t); if (o.f1) fl.frequency.exponentialRampToValueAtTime(o.f1, t + dur); fl.Q.value = o.q ?? 2;
+    const am = ctx.createGain(); am.gain.value = 0.5;
+    const lfo = ctx.createOscillator(); lfo.type = o.wave || 'sawtooth'; lfo.frequency.setValueAtTime(o.rate || 90, t); if (o.rate1) lfo.frequency.exponentialRampToValueAtTime(o.rate1, t + dur);
+    const depth = ctx.createGain(); depth.gain.value = 0.5; lfo.connect(depth); depth.connect(am.gain);
+    const env = ctx.createGain(); env.gain.setValueAtTime(0.0001, t); env.gain.exponentialRampToValueAtTime(v, t + (o.a ?? 0.02)); env.gain.setValueAtTime(v, t + dur * 0.7); env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(fl); fl.connect(am); am.connect(env); this.route(env, o);
+    src.start(t, Math.random()); lfo.start(t); src.stop(t + dur + 0.05); lfo.stop(t + dur + 0.05);
   },
 };
 
@@ -759,6 +692,602 @@ function speak(text) {
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   } catch (e) { /* no speech */ }
 }
+
+// =====================================================================
+//  SOUND EFFECTS — built from the SND primitives (modal hits, formant
+//  voices, filtered noise). S.at(worldPos).name() plays a sound from a
+//  spot in the room: panned, quieter and wetter with distance.
+// =====================================================================
+const MATS = {
+  metal:   { f: 620,  ratios: [1, 2.76, 5.4, 8.93], decay: 0.45, vol: 0.11, hit: 0.8 },
+  glass:   { f: 1500, ratios: [1, 2.32, 4.25, 6.63], decay: 0.55, vol: 0.07, hit: 0.6 },
+  can:     { f: 950,  ratios: [1, 1.63, 2.8, 4.1], decay: 0.12, vol: 0.1, hit: 0.7 },
+  wood:    { f: 420,  ratios: [1, 2.1, 3.9, 5.2], decay: 0.07, vol: 0.14, hit: 0.9 },
+  plastic: { f: 780,  ratios: [1, 1.8, 3.2, 4.9], decay: 0.05, vol: 0.12, hit: 0.8 },
+  card:    { f: 260,  ratios: [1, 2.4], decay: 0.03, vol: 0.08, hit: 1.4 },
+  heavy:   { f: 180,  ratios: [1, 2.3, 3.7], decay: 0.06, vol: 0.14, hit: 0.7, thump: 85, w: 1.8 },
+};
+const ITEM_MAT = {
+  beer: 'can', energy: 'can', gunpowder: 'can', whiskey: 'glass', poison: 'glass', fuse: 'glass', glass: 'glass', mirror: 'glass',
+  saw: 'metal', cuffs: 'metal', cutters: 'metal', magnet: 'metal', flashlight: 'metal', coin: 'metal',
+  inverter: 'plastic', phone: 'plastic', adrenaline: 'plastic', medicine: 'plastic', pills: 'plastic', xray: 'plastic',
+  liveshell: 'plastic', dummy: 'plastic', shuffler: 'plastic', dice: 'plastic',
+  cig: 'card', cigar: 'card', tape: 'card', vest: 'card', box: 'card', tarot: 'card', joker: 'card', contract: 'card', burst: 'card', voodoo: 'card',
+  rosary: 'wood', battery: 'heavy',
+};
+const matOf = id => ITEM_MAT[id] || 'wood';
+const wpos = o => o.getWorldPosition(V3());
+const sndNow = () => SND.ctx ? SND.ctx.currentTime : 0;
+
+// position in camera space -> pan / distance gain / extra reverb
+const _sv = new THREE.Vector3();
+function spatial(pos) {
+  camRig.updateMatrixWorld(true);
+  _sv.copy(pos).applyMatrix4(camera.matrixWorldInverse);
+  const dist = _sv.length();
+  return {
+    pan: clamp(_sv.x / Math.max(0.35, -_sv.z + 0.35) * 0.8, -0.9, 0.9),
+    gain: clamp(1 / (0.75 + 0.25 * dist), 0.45, 1.2),   // gentle: the dealer 2.8 m away is ~3 dB down
+    rev: clamp((dist - 0.6) * 0.18, 0, 0.45),
+  };
+}
+
+const S = {
+  _pos: null, _mt: -1,
+  // ---------------- the shotgun ----------------
+  shot() {
+    const t = sndNow();
+    SND.modal({ at: t, f: 2100, ratios: [1, 2.3, 3.9], decay: 0.05, vol: 0.12, hit: 0.5 });                          // firing pin
+    SND.noise({ at: t + 0.004, type: 'highpass', f: 1200, dur: 0.05, vol: 1.1, a: 0.0008, dist: true });              // supersonic crack
+    SND.noise({ at: t + 0.004, type: 'lowpass', f: 8000, f1: 220, slide: 0.45, q: 0.5, dur: 0.9, vol: 1.0, a: 0.001, dist: true, rev: 1.0 }); // blast
+    SND.tone({ at: t + 0.004, type: 'sawtooth', f: 180, f1: 42, slide: 0.18, dur: 0.35, vol: 0.55, filter: 'lowpass', ff: 420, a: 0.002, dist: true }); // punch
+    SND.tone({ at: t + 0.004, type: 'sine', f: 95, f1: 28, slide: 0.5, dur: 0.75, vol: 1.1, a: 0.002 });              // sub drop
+    [[0.038, 0.35, -0.5], [0.071, 0.26, 0.6], [0.118, 0.16, -0.2]].forEach(([dt, v, p]) =>                             // concrete slap-back
+      SND.noise({ at: t + dt, type: 'lowpass', f: 3000, f1: 400, slide: 0.2, dur: 0.3, vol: v, a: 0.002, pan: p, rev: 0.4 }));
+    SND.crackle({ at: t + 0.06, dur: 0.35, density: 60, f: 2600, q: 3, grain: 0.01, vol: 0.12 });                      // pellets hit the back wall
+    SND.noise({ at: t + 0.05, type: 'lowpass', f: 300, f1: 60, dur: 1.8, a: 0.05, vol: 0.35, rev: 0.6 });              // room rumble
+    SND.deafen(0.85, 2.6, 0.06);
+  },
+  click() { // hammer drops on a blank
+    const t = sndNow();
+    SND.modal({ at: t, f: 1650, ratios: [1, 2.45, 4.1, 6.6], decay: 0.07, vol: 0.28, hit: 1.0, inharm: 0.03 });
+    SND.tone({ at: t, type: 'sine', f: 240, f1: 110, dur: 0.07, vol: 0.18 });
+    SND.noise({ at: t + 0.002, type: 'bandpass', f: 4500, q: 2, dur: 0.02, vol: 0.35 });
+    SND.modal({ at: t + 0.01, f: 5400, ratios: [1, 1.5], decay: 0.18, vol: 0.02, hit: 0 });                            // spring ring
+    SND.noise({ at: t + 0.008, type: 'bandpass', f: 1200, q: 0.7, dur: 0.12, vol: 0.12, a: 0.003 });                  // primer puff
+  },
+  rack() { // pump back ... chk ... pump forward ... CHK (timed to rackAnim)
+    const t = sndNow(), M = MATS.metal.ratios;
+    SND.noise({ at: t, type: 'bandpass', f: 1300, f1: 2600, slide: 0.12, q: 2.5, dur: 0.13, vol: 0.28, a: 0.01 });
+    SND.amNoise({ at: t, f: 3200, q: 3, rate: 180, dur: 0.12, vol: 0.08 });
+    SND.modal({ at: t + 0.12, f: 820, ratios: M, decay: 0.12, vol: 0.34, hit: 1.2 });
+    SND.tone({ at: t + 0.12, type: 'sine', f: 210, f1: 90, dur: 0.08, vol: 0.25 });
+    SND.noise({ at: t + 0.19, type: 'bandpass', f: 2400, f1: 1400, slide: 0.13, q: 2.5, dur: 0.14, vol: 0.24, a: 0.01 });
+    SND.modal({ at: t + 0.33, f: 640, ratios: M, decay: 0.16, vol: 0.42, hit: 1.4 });
+    SND.tone({ at: t + 0.33, type: 'sine', f: 170, f1: 70, dur: 0.1, vol: 0.32 });
+    SND.noise({ at: t + 0.33, type: 'bandpass', f: 3800, q: 3, dur: 0.02, vol: 0.4 });
+  },
+  load(d = 0) { // a shell pushed past the loading gate into the tube
+    SND.noise({ delay: d, type: 'bandpass', f: 2600, f1: 1800, q: 3, dur: 0.07, vol: 0.2, a: 0.005 });
+    SND.modal({ delay: d + 0.06, f: 1900, ratios: [1, 2.6, 4.3], decay: 0.05, vol: 0.2, hit: 0.8 });
+    SND.modal({ delay: d + 0.065, f: 520, ratios: [1, 2.02, 3.05], decay: 0.22, vol: 0.05, hit: 0, inharm: 0.05 });
+    SND.tone({ delay: d + 0.06, type: 'sine', f: 300, f1: 140, dur: 0.06, vol: 0.12 });
+  },
+  clack(d = 0, v = 1) { // shell hull + brass head on the table
+    if (v < 0.03) return;
+    const f = rand(1700, 2300);
+    SND.modal({ delay: d, f, ratios: [1, 1.58, 2.9, 4.4], decay: 0.06, vol: 0.2 * v, hit: 0.9 });
+    SND.modal({ delay: d, f: f * 2.7, ratios: [1, 2.2], decay: 0.12, vol: 0.05 * v, hit: 0 });
+    SND.tone({ delay: d, type: 'sine', f: rand(170, 220), f1: 90, dur: 0.06, vol: 0.18 * v });
+  },
+  metal(d = 0, v = 1) { // sawn-off barrel piece / cuffs falling off
+    SND.modal({ delay: d, f: rand(420, 700), ratios: [1, 2.76, 5.4, 8.93, 13.3], decay: 0.9, vol: 0.14 * v, hit: 1.0, rev: 0.25 });
+    SND.tone({ delay: d, type: 'sine', f: 160, f1: 70, dur: 0.07, vol: 0.2 * v });
+  },
+  // ---------------- handling ----------------
+  thud(d = 0, vol = 0.35) {
+    SND.tone({ delay: d, type: 'sine', f: 120, f1: 50, dur: 0.18, vol: vol * 1.1 });
+    SND.noise({ delay: d, type: 'lowpass', f: 900, f1: 200, dur: 0.1, vol: vol * 0.55 });
+    SND.modal({ delay: d, f: 190, ratios: MATS.wood.ratios, decay: 0.1, vol: vol * 0.3, hit: 0.3 });
+  },
+  place(mat = 'wood', v = 1) {
+    const M = MATS[mat] || MATS.wood;
+    SND.tone({ type: 'sine', f: M.thump || 150, f1: 70, dur: 0.09, vol: 0.22 * v * (M.w || 1) });
+    SND.noise({ type: 'lowpass', f: 1400, dur: 0.04, vol: 0.12 * v });
+    SND.modal({ f: M.f * rand(0.92, 1.08), ratios: M.ratios, decay: M.decay, vol: M.vol * v, hit: M.hit });
+  },
+  pickup() {
+    SND.noise({ type: 'bandpass', f: 700, f1: 1500, q: 0.9, dur: 0.18, vol: 0.1, a: 0.03 });
+    SND.modal({ delay: 0.01, f: rand(900, 1300), ratios: [1, 2.3], decay: 0.03, vol: 0.06, hit: 0.5 });
+  },
+  whoosh(d = 0, v = 1) {
+    SND.noise({ delay: d, type: 'bandpass', f: 280, f1: 1300, slide: 0.16, q: 1.3, dur: 0.3, vol: 0.14 * v, a: 0.1 });
+    SND.noise({ delay: d + 0.12, type: 'bandpass', f: 1300, f1: 500, slide: 0.15, q: 1.1, dur: 0.18, vol: 0.06 * v, a: 0.02 });
+  },
+  box() { // item crate: hinge creak, lid knocks open
+    SND.tone({ type: 'sawtooth', f: 45, f1: 28, dur: 0.35, vol: 0.05, filter: 'bandpass', ff: 1200, q: 8 });
+    SND.modal({ delay: 0.3, f: 380, ratios: MATS.wood.ratios, decay: 0.08, vol: 0.15, hit: 1 });
+    SND.tone({ delay: 0.3, type: 'sine', f: 130, f1: 60, dur: 0.1, vol: 0.2 });
+    SND.noise({ delay: 0.05, type: 'bandpass', f: 1600, q: 0.8, dur: 0.3, vol: 0.05, a: 0.1 });
+  },
+  latch() {
+    [0, 0.14].forEach(d => {
+      SND.modal({ delay: d, f: 1300, ratios: MATS.metal.ratios, decay: 0.07, vol: 0.16, hit: 1.2 });
+      SND.tone({ delay: d, type: 'sine', f: 240, f1: 110, dur: 0.05, vol: 0.12 });
+    });
+  },
+  paper() {
+    SND.crackle({ dur: 0.3, density: 110, f: 2800, q: 1.2, grain: 0.02, vol: 0.1 });
+    SND.noise({ type: 'bandpass', f: 1800, f1: 3500, q: 0.8, dur: 0.3, vol: 0.13, a: 0.04 });
+  },
+  pen(sec = 0.7) {
+    let t = 0;
+    while (t < sec) { const d = rand(0.05, 0.12); SND.noise({ delay: t, type: 'bandpass', f: rand(3500, 5500), f1: rand(3000, 6000), q: 2.5, dur: d, vol: rand(0.09, 0.18), a: 0.01 }); t += d + rand(0, 0.03); }
+    SND.modal({ delay: sec + 0.05, f: 1500, ratios: [1, 2.5], decay: 0.03, vol: 0.05 });
+  },
+  cash() {
+    this.paper();
+    SND.modal({ f: 1320, ratios: [1, 2.76, 5.4], decay: 1.2, vol: 0.04, rev: 0.5 });
+    SND.modal({ delay: 0.1, f: 1760, ratios: [1, 2.76], decay: 1.2, vol: 0.035, rev: 0.5 });
+    for (let i = 0; i < 12; i++) SND.modal({ delay: 0.15 + Math.random() * 0.6, f: rand(3000, 5000), ratios: [1, 2.3], decay: 0.3, vol: 0.02 });
+  },
+  // ---------------- drinks ----------------
+  canOpen() {
+    SND.modal({ f: 2900, ratios: [1, 1.9, 3.1], decay: 0.03, vol: 0.12, hit: 1.4 });
+    SND.noise({ delay: 0.012, type: 'highpass', f: 2600, f1: 4800, slide: 0.3, dur: 0.42, vol: 0.28, a: 0.004 });
+    SND.noise({ delay: 0.012, type: 'bandpass', f: 1500, q: 0.8, dur: 0.12, vol: 0.12 });
+    SND.crackle({ delay: 0.15, dur: 1.2, density: 50, f: 6500, q: 5, grain: 0.006, vol: 0.035 });
+  },
+  uncork() {
+    SND.tone({ type: 'sawtooth', f: 60, f1: 110, dur: 0.22, vol: 0.05, filter: 'bandpass', ff: 1500, q: 6 });
+    SND.tone({ delay: 0.22, type: 'sine', f: 620, f1: 260, dur: 0.07, vol: 0.2 });
+    SND.noise({ delay: 0.22, type: 'bandpass', f: 900, q: 1, dur: 0.05, vol: 0.2 });
+  },
+  gulp(i = 0) {
+    SND.noise({ type: 'bandpass', f: 500 + i * 40, f1: 300, q: 2, dur: 0.12, vol: 0.12, a: 0.02 });
+    SND.tone({ type: 'sine', f: 240 - i * 15, f1: 110, dur: 0.1, vol: 0.2, a: 0.01 });
+    SND.voice({ delay: 0.02, f0: 85, vowel: 'u', dur: 0.07, vol: 0.03, breath: 0.3 });
+    SND.tone({ delay: 0.05, type: 'sine', f: rand(420, 620), f1: 900, dur: 0.04, vol: 0.05 });
+  },
+  ahh(dealer = true) {
+    if (dealer) SND.voice({ f0: 98, f1: 80, vowel: 'ah', dur: 0.6, vol: 0.12, breath: 0.6, a: 0.05, wobble: 0.03, grit: 1 });
+    SND.noise({ type: 'bandpass', f: 1200, f1: 700, q: 0.8, dur: 0.6, vol: 0.05, a: 0.05 });
+  },
+  burn() { // after whiskey: a harsh breath
+    SND.noise({ type: 'bandpass', f: 2500, f1: 1400, q: 0.8, dur: 0.35, vol: 0.1, a: 0.01 });
+    SND.voice({ delay: 0.02, f0: 110, f1: 90, vowel: 'ah', dur: 0.25, vol: 0.02, breath: 1.5 });
+  },
+  crush() {
+    for (let i = 0; i < 9; i++) SND.modal({ delay: i * 0.012 + Math.random() * 0.01, f: rand(1300, 3200), ratios: [1, 1.7, 2.9], decay: 0.03, vol: 0.06, hit: 1.2, inharm: 0.1 });
+    SND.noise({ type: 'bandpass', f: 1600, q: 0.9, dur: 0.14, vol: 0.2, a: 0.004 });
+    SND.tone({ type: 'sine', f: 180, f1: 90, dur: 0.06, vol: 0.12 });
+  },
+  // ---------------- smoking ----------------
+  flame() { // flint wheel, ignition, flame
+    for (let i = 0; i < 4; i++) SND.noise({ delay: i * 0.018, type: 'bandpass', f: rand(4000, 6500), q: 6, dur: 0.012, vol: 0.2 });
+    SND.modal({ f: 3300, ratios: [1, 2.2], decay: 0.02, vol: 0.05, hit: 0.5 });
+    SND.noise({ delay: 0.07, type: 'lowpass', f: 2500, f1: 700, slide: 0.15, q: 0.7, dur: 0.25, vol: 0.28, a: 0.015 });
+    SND.tone({ delay: 0.07, type: 'sine', f: 110, f1: 60, dur: 0.12, vol: 0.12 });
+    SND.noise({ delay: 0.12, type: 'bandpass', f: 1100, q: 0.6, dur: 0.45, vol: 0.07, a: 0.05 });
+    SND.amNoise({ delay: 0.12, f: 600, q: 0.7, rate: 11, wave: 'sine', dur: 0.45, vol: 0.05 });
+  },
+  inhale(sec = 0.9) { // tobacco crackles while dragging
+    SND.noise({ type: 'bandpass', f: 800, f1: 1600, q: 0.7, dur: sec, vol: 0.13, a: sec * 0.5 });
+    SND.crackle({ dur: sec, density: 45, f: 4200, q: 3, grain: 0.008, vol: 0.14 });
+    SND.crackle({ dur: sec, density: 20, f: 1500, q: 2, grain: 0.015, vol: 0.09 });
+  },
+  exhale(v = 1) {
+    SND.noise({ type: 'lowpass', f: 1500, f1: 350, q: 0.5, dur: 0.95, vol: 0.13 * v, a: 0.06 });
+    SND.noise({ type: 'bandpass', f: 2600, f1: 1300, q: 0.9, dur: 0.7, vol: 0.04 * v, a: 0.05 });
+  },
+  cig() { this.flame(); this.inhale(0.9); this.exhale(); }, // fallback (no animation)
+  // ---------------- medicine ----------------
+  capPop() {
+    SND.modal({ f: 1400, ratios: [1, 1.8, 3.2], decay: 0.03, vol: 0.12, hit: 1.2 });
+    SND.tone({ type: 'sine', f: 700, f1: 380, dur: 0.04, vol: 0.08 });
+  },
+  rattle(sec = 0.5) { // pills shaken in a plastic bottle
+    const shakes = Math.max(2, Math.round(sec / 0.13));
+    for (let s = 0; s < shakes; s++) {
+      const d = s * sec / shakes;
+      SND.modal({ delay: d, f: 520, ratios: [1, 1.9, 3.1], decay: 0.03, vol: 0.04, hit: 0.3 });
+      for (let i = 0; i < 5; i++) SND.modal({ delay: d + i * 0.008 + Math.random() * 0.02, f: rand(2300, 3800), ratios: [1, 2.2, 3.6], decay: 0.025, vol: rand(0.03, 0.075), hit: 0.8, inharm: 0.08 });
+    }
+  },
+  swallow() {
+    SND.voice({ f0: 80, vowel: 'u', dur: 0.1, vol: 0.03, breath: 0.4 });
+    SND.tone({ type: 'sine', f: 190, f1: 90, dur: 0.14, vol: 0.2 });
+    SND.noise({ type: 'lowpass', f: 500, dur: 0.1, vol: 0.08 });
+  },
+  pills() { this.capPop(); this.rattle(0.45); SND.tone({ delay: 0.7, type: 'sine', f: 190, f1: 90, dur: 0.14, vol: 0.2 }); },
+  inject() { // needle in, plunger, the heart races
+    SND.noise({ type: 'highpass', f: 5000, dur: 0.025, vol: 0.25 });
+    SND.tone({ type: 'sine', f: 330, f1: 150, dur: 0.05, vol: 0.12 });
+    SND.noise({ delay: 0.05, type: 'bandpass', f: 3200, f1: 2200, q: 2, dur: 0.3, vol: 0.06, a: 0.02 });
+    SND.modal({ delay: 0.33, f: 2600, ratios: [1, 2.4], decay: 0.03, vol: 0.05 });
+    SND.tone({ delay: 0.35, type: 'sine', f: 5200, dur: 1.6, vol: 0.012, a: 0.4 });
+    this.heart(0.45, 1.5); this.heart(1.7, 1.9);
+  },
+  heart(d = 0, speed = 1) { // lub-dub
+    const gap = 0.62 / speed;
+    for (let i = 0; i < 2; i++) {
+      const t = d + i * gap;
+      SND.tone({ delay: t, type: 'sine', f: 62, f1: 38, dur: 0.2, vol: 0.62, a: 0.008 });
+      SND.noise({ delay: t, type: 'lowpass', f: 180, dur: 0.1, vol: 0.25 });
+      SND.tone({ delay: t + 0.17 / speed, type: 'sine', f: 78, f1: 46, dur: 0.15, vol: 0.45, a: 0.006 });
+    }
+  },
+  // ---------------- looking at the gun ----------------
+  glass() {
+    this.whoosh(0, 0.6);
+    SND.modal({ delay: 0.08, f: 2400, ratios: [1, 2.32, 4.25], decay: 0.9, vol: 0.035, hit: 0, rev: 0.4 });
+    SND.tone({ delay: 0.1, type: 'sine', f: 1200, f1: 1900, dur: 0.35, vol: 0.02, rev: 0.4 });
+  },
+  hmm() { SND.voice({ f0: 92, f1: 84, vowel: 'u', dur: 0.45, vol: 0.1, breath: 0.2, a: 0.06, grit: 1 }); },
+  flashClick() {
+    SND.modal({ f: 2200, ratios: [1, 1.9, 3.3], decay: 0.03, vol: 0.14, hit: 1 });
+    SND.modal({ delay: 0.06, f: 1800, ratios: [1, 2.1], decay: 0.02, vol: 0.06 });
+    SND.tone({ delay: 0.05, type: 'sine', f: 9000, dur: 0.9, vol: 0.004, a: 0.1 });
+  },
+  goggles() {
+    SND.modal({ f: 1900, ratios: [1, 2.3], decay: 0.03, vol: 0.1 });
+    SND.tone({ delay: 0.03, type: 'sine', f: 600, f1: 7800, slide: 0.6, dur: 0.7, vol: 0.03 });
+    SND.tone({ delay: 0.03, type: 'sawtooth', f: 120, dur: 2.6, vol: 0.02, filter: 'lowpass', ff: 700, a: 0.2 });
+    SND.noise({ delay: 0.1, type: 'highpass', f: 6000, dur: 2.5, vol: 0.015, a: 0.3 });
+  },
+  // ---------------- saw ----------------
+  sawStroke(i = 0, d = 0) {
+    const push = i % 2 === 0;
+    SND.amNoise({ delay: d, f: push ? 2600 : 3300, f1: push ? 3300 : 2600, q: 2.2, rate: push ? 70 : 85, rate1: push ? 110 : 60, dur: 0.17, vol: 0.3, a: 0.03 });
+    SND.noise({ delay: d, type: 'bandpass', f: 6500, q: 3, dur: 0.15, vol: 0.05, a: 0.03 });
+    SND.modal({ delay: d, f: 1150, ratios: [1, 2.76, 5.4], decay: 0.25, vol: 0.025, hit: 0 });
+    SND.crackle({ delay: d, dur: 0.15, density: 60, f: 5000, q: 4, grain: 0.005, vol: 0.05 });
+  },
+  saw() { for (let i = 0; i < 5; i++) this.sawStroke(i, i * 0.2); this.metal(1.1); },
+  // ---------------- electric ----------------
+  inverter() {
+    SND.modal({ f: 900, ratios: [1, 2.4, 4.1], decay: 0.06, vol: 0.12, hit: 1 });
+    SND.tone({ delay: 0.02, type: 'sine', f: 300, f1: 2400, slide: 0.35, dur: 0.4, vol: 0.05 });
+    SND.tone({ delay: 0.05, type: 'sawtooth', f: 100, dur: 0.6, vol: 0.06, filter: 'bandpass', ff: 1400, q: 3, a: 0.05 });
+    SND.amNoise({ delay: 0.05, f: 3000, q: 1.5, rate: 100, wave: 'square', dur: 0.55, vol: 0.07 });
+    SND.tone({ delay: 0.5, type: 'sawtooth', f: 90, f1: 45, dur: 0.35, vol: 0.14, filter: 'lowpass', ff: 900, dist: true });
+    SND.tone({ delay: 0.5, type: 'sine', f: 1800, f1: 250, dur: 0.25, vol: 0.05 });
+  },
+  zapArc() {
+    SND.noise({ type: 'bandpass', f: rand(2500, 4500), f1: 1200, q: 1.5, dur: 0.12, vol: 0.2, a: 0.001, dist: true });
+    SND.crackle({ dur: 0.1, density: 150, f: 5000, q: 2, grain: 0.004, vol: 0.12 });
+    SND.tone({ type: 'sawtooth', f: 120, dur: 0.09, vol: 0.05, dist: true });
+  },
+  zapSmall() {
+    SND.noise({ type: 'bandpass', f: 3000, q: 1, dur: 0.22, vol: 0.28, dist: true, a: 0.001 });
+    SND.amNoise({ f: 1500, q: 1, rate: 100, wave: 'square', dur: 0.25, vol: 0.12 });
+    SND.crackle({ dur: 0.2, density: 100, f: 5000, q: 2, grain: 0.004, vol: 0.1 });
+  },
+  zap(d = 0) { // defibrillator: charge whine, ready beep, discharge
+    SND.tone({ delay: d, type: 'sine', f: 280, f1: 3600, slide: 1.1, dur: 1.15, vol: 0.05, a: 0.05 });
+    SND.tone({ delay: d, type: 'triangle', f: 560, f1: 7200, slide: 1.1, dur: 1.15, vol: 0.012, a: 0.05 });
+    SND.tone({ delay: d + 0.95, type: 'square', f: 1400, dur: 0.14, vol: 0.03, filter: 'lowpass', ff: 4000 });
+    const t = d + 1.15;
+    SND.noise({ delay: t, type: 'bandpass', f: 2000, q: 0.6, dur: 0.3, vol: 0.45, a: 0.001, dist: true });
+    SND.tone({ delay: t, type: 'sine', f: 75, f1: 30, dur: 0.35, vol: 0.55 });
+    SND.tone({ delay: t, type: 'sawtooth', f: 110, f1: 90, dur: 0.25, vol: 0.12, dist: true });
+    SND.crackle({ delay: t, dur: 0.35, density: 90, f: 4200, q: 1.5, grain: 0.005, vol: 0.2 });
+  },
+  clamp() { // battery clamps / fuse snapped into the device
+    SND.modal({ f: 1100, ratios: [1, 2.6, 4.9], decay: 0.08, vol: 0.14, hit: 1 });
+    SND.tone({ type: 'sine', f: 180, f1: 80, dur: 0.07, vol: 0.15 });
+  },
+  chargeUp() {
+    SND.tone({ type: 'sine', f: 180, f1: 1600, slide: 0.5, dur: 0.6, vol: 0.05 });
+    SND.tone({ type: 'sawtooth', f: 50, dur: 0.8, vol: 0.05, filter: 'lowpass', ff: 300, a: 0.1 });
+    SND.modal({ delay: 0.55, f: 1800, ratios: [1, 2], decay: 0.03, vol: 0.08 });
+    [0, 0.08].forEach((d, i) => SND.tone({ delay: 0.6 + d, type: 'square', f: 1200 + i * 400, dur: 0.05, vol: 0.03, filter: 'lowpass', ff: 3000 }));
+  },
+  power() { // display relay + beeps + transformer hum
+    SND.modal({ f: 1500, ratios: [1, 2.4], decay: 0.03, vol: 0.08 });
+    [0, 0.09, 0.18].forEach((d, i) => SND.tone({ delay: 0.03 + d, type: 'square', f: 660 + i * 330, dur: 0.06, vol: 0.035, filter: 'lowpass', ff: 3000 }));
+    SND.tone({ type: 'sine', f: 50, dur: 0.6, vol: 0.06, a: 0.05 });
+    SND.tone({ type: 'sine', f: 100, dur: 0.5, vol: 0.03, a: 0.05 });
+  },
+  buzz(sec = 0.8) { // stage lamp strikes up
+    SND.modal({ f: 1400, ratios: [1, 2.5], decay: 0.04, vol: 0.12, hit: 1 });
+    SND.tone({ type: 'sine', f: 100, dur: 0.12, vol: 0.2 });
+    SND.amNoise({ f: 2400, q: 1.2, rate: 100, wave: 'square', dur: sec, vol: 0.06, a: 0.01 });
+    SND.tone({ type: 'sawtooth', f: 100, dur: sec, vol: 0.03, filter: 'bandpass', ff: 1800, q: 2, a: 0.01 });
+    for (let i = 0; i < 4; i++) SND.noise({ delay: Math.random() * sec, type: 'bandpass', f: 3000, q: 1, dur: 0.03, vol: 0.1, dist: true });
+  },
+  flick(sec = 0.1) { // a lamp stutters
+    SND.amNoise({ f: 2200, q: 1.5, rate: 100, wave: 'square', dur: sec + 0.05, vol: 0.035, a: 0.005 });
+    SND.noise({ type: 'bandpass', f: 3500, q: 1, dur: 0.02, vol: 0.05, dist: true });
+  },
+  // ---------------- restraints / throwing ----------------
+  cuffs() {
+    SND.modal({ f: 760, ratios: MATS.metal.ratios, decay: 0.35, vol: 0.16, hit: 1.2 });
+    for (let i = 0; i < 7; i++) SND.modal({ delay: 0.06 + i * 0.032, f: 3600 + i * 40, ratios: [1, 2.3], decay: 0.02, vol: 0.09, hit: 1.1 });
+    for (let i = 0; i < 6; i++) SND.modal({ delay: 0.02 + Math.random() * 0.35, f: rand(2200, 4200), ratios: [1, 2.7, 5.1], decay: 0.08, vol: 0.03, hit: 0.3 });
+    SND.modal({ delay: 0.3, f: 3400, ratios: [1, 2.3], decay: 0.03, vol: 0.1, hit: 1 });
+  },
+  tape(sec = 0.6, d = 0) { // pulled off the roll, then torn
+    SND.amNoise({ delay: d, f: 1700, f1: 2500, q: 1.4, rate: 140, rate1: 70, wave: 'square', dur: sec, vol: 0.22, a: 0.02 });
+    SND.noise({ delay: d, type: 'bandpass', f: 900, q: 1, dur: sec, vol: 0.06, a: 0.05 });
+    SND.noise({ delay: d + sec, type: 'highpass', f: 2500, dur: 0.07, vol: 0.22 });
+    SND.crackle({ delay: d + sec, dur: 0.06, density: 300, f: 4000, q: 2, grain: 0.004, vol: 0.12 });
+  },
+  tapeBind() { this.tape(0.26); this.tape(0.2, 0.32); },
+  splash() {
+    SND.noise({ type: 'bandpass', f: 1800, f1: 500, q: 0.7, dur: 0.45, vol: 0.3, a: 0.004 });
+    SND.noise({ type: 'lowpass', f: 700, dur: 0.12, vol: 0.2 });
+    for (let i = 0; i < 9; i++) SND.tone({ delay: 0.05 + Math.random() * 0.4, type: 'sine', f: rand(500, 900), f1: rand(1300, 2200), dur: 0.035, vol: rand(0.02, 0.05) });
+  },
+  cloth() {
+    SND.noise({ type: 'bandpass', f: 600, f1: 1600, q: 0.7, dur: 0.3, vol: 0.14, a: 0.05 });
+    SND.crackle({ dur: 0.25, density: 40, f: 2000, q: 1.5, grain: 0.01, vol: 0.04 });
+  },
+  velcro() {
+    this.cloth();
+    SND.amNoise({ delay: 0.15, f: 3000, q: 1, rate: 220, rate1: 160, wave: 'square', dur: 0.28, vol: 0.18, a: 0.01 });
+    SND.tone({ delay: 0.45, type: 'sine', f: 150, f1: 80, dur: 0.1, vol: 0.15 });
+  },
+  // ---------------- luck & magic ----------------
+  glint() {
+    SND.modal({ f: 2700, ratios: [1, 1.5, 2.01, 3.02], decay: 1.1, vol: 0.03, hit: 0, rev: 0.5 });
+    SND.tone({ type: 'sine', f: 3100, f1: 4600, dur: 0.4, vol: 0.02, rev: 0.5, a: 0.05 });
+    SND.noise({ type: 'highpass', f: 7000, dur: 0.5, vol: 0.02, a: 0.1 });
+  },
+  magic() { // eerie cluster + reversed shimmer + a hollow choir note
+    const base = pick([196, 207.65, 185]);
+    [1, 1.19, 1.5, 1.78, 2.38].forEach((r, i) => SND.tone({ delay: i * 0.06, type: 'sine', f: base * r * 2, dur: 1.4, vol: 0.022, a: 0.35, detune: rand(-12, 12), rev: 0.8 }));
+    SND.noise({ type: 'bandpass', f: 3000, f1: 6000, q: 3, dur: 1.2, vol: 0.03, a: 0.6, rev: 0.6 });
+    SND.voice({ f0: base / 2, vowel: 'o', dur: 1.3, vol: 0.018, breath: 0.2, a: 0.4, rev: 0.7 });
+  },
+  bad() {
+    SND.tone({ type: 'sawtooth', f: 110, f1: 55, dur: 0.9, vol: 0.08, filter: 'lowpass', ff: 500, rev: 0.4, a: 0.02 });
+    SND.tone({ type: 'sawtooth', f: 116.5, f1: 58, dur: 0.9, vol: 0.06, filter: 'lowpass', ff: 500, a: 0.02 });
+    SND.tone({ type: 'sine', f: 55, dur: 0.8, vol: 0.14 });
+  },
+  coinFlick() {
+    SND.modal({ f: 3200, ratios: [1, 2.3, 3.9, 5.1], decay: 0.9, vol: 0.05, hit: 1.2, rev: 0.2 });
+    SND.amNoise({ delay: 0.05, f: 5500, q: 3, rate: 28, rate1: 18, wave: 'sine', dur: 0.9, vol: 0.02 });
+  },
+  coinLand() { // hits the felt, then wobbles faster and faster until it lies flat
+    SND.modal({ f: 2700, ratios: [1, 2.3, 3.9, 5.1], decay: 0.5, vol: 0.09, hit: 1, rev: 0.15 });
+    SND.tone({ type: 'sine', f: 220, f1: 110, dur: 0.05, vol: 0.12 });
+    let t = 0.14, gap = 0.1;
+    for (let i = 0; i < 10; i++) { SND.modal({ delay: t, f: 2700, ratios: [1, 2.3, 3.9], decay: 0.08, vol: 0.035 * (1 - i / 12), hit: 0.6 }); gap *= 0.8; t += gap; }
+  },
+  coin() { this.coinFlick(); this.coinLand(); },
+  dieHit(v = 1) {
+    if (v < 0.03) return;
+    SND.modal({ f: rand(1500, 2300), ratios: [1, 1.9, 3.1], decay: 0.035, vol: 0.2 * v, hit: 1 });
+    SND.tone({ type: 'sine', f: rand(160, 220), f1: 90, dur: 0.05, vol: 0.18 * v });
+  },
+  diceShake() { for (let i = 0; i < 6; i++) SND.modal({ delay: i * 0.035 + Math.random() * 0.015, f: rand(1800, 2600), ratios: [1, 1.9, 3.1], decay: 0.025, vol: 0.06, hit: 0.8 }); },
+  dice() { let t = 0, v = 1; for (let i = 0; i < 8; i++) { SND.modal({ delay: t, f: rand(1500, 2300), ratios: [1, 1.9, 3.1], decay: 0.035, vol: 0.2 * v, hit: 1 }); t += rand(0.05, 0.14) * v; v *= 0.78; } },
+  shake(sec = 0.8, d = 0) { // shells rattling inside the tube
+    const n = Math.round(sec / 0.07);
+    for (let i = 0; i < n; i++) {
+      const t = d + i * sec / n;
+      SND.modal({ delay: t, f: rand(1600, 2300), ratios: [1, 1.58, 2.9], decay: 0.05, vol: 0.09, hit: 0.9 });
+      SND.modal({ delay: t + 0.01, f: rand(4000, 5200), ratios: [1, 2.1], decay: 0.06, vol: 0.03, hit: 0 });
+    }
+    SND.noise({ delay: d, type: 'bandpass', f: 1200, q: 1, dur: sec, vol: 0.04, a: 0.1 });
+  },
+  beads(sec = 1.2) { // rosary beads + a faint choir
+    for (let i = 0; i < 16; i++) SND.modal({ delay: Math.random() * sec, f: rand(1800, 2800), ratios: [1, 2.2, 3.8], decay: 0.04, vol: rand(0.02, 0.05), hit: 0.6 });
+    [0, 7, 12].forEach(st => SND.voice({ delay: 0.1, f0: 146.8 * Math.pow(2, st / 12), vowel: 'o', dur: sec + 0.3, vol: 0.012, a: 0.4, breath: 0.15, rev: 0.8, wobble: 0.015 }));
+  },
+  pin() { // needle into the doll
+    SND.noise({ type: 'bandpass', f: 1800, q: 1, dur: 0.05, vol: 0.14 });
+    SND.modal({ f: 4200, ratios: [1, 2.5], decay: 0.05, vol: 0.03 });
+    SND.tone({ type: 'sine', f: 260, f1: 120, dur: 0.05, vol: 0.08 });
+  },
+  stab() { // generic stab (fallback)
+    SND.noise({ type: 'highpass', f: 3000, dur: 0.05, vol: 0.3 });
+    SND.tone({ type: 'sine', f: 210, f1: 80, dur: 0.15, vol: 0.28 });
+  },
+  snap() { // card flicked
+    SND.noise({ type: 'bandpass', f: 2600, q: 1.2, dur: 0.035, vol: 0.28, a: 0.001 });
+    SND.noise({ delay: 0.02, type: 'bandpass', f: 1400, f1: 3200, q: 0.8, dur: 0.15, vol: 0.08, a: 0.02 });
+    SND.tone({ type: 'sine', f: 480, f1: 200, dur: 0.03, vol: 0.06 });
+  },
+  tarot() { this.magic(); SND.tone({ type: 'sine', f: 41, dur: 1.6, vol: 0.12, a: 0.3 }); },
+  joker() { // out-of-tune music box
+    [0, 3, 7, 6, 3, -2].forEach((st, i) => SND.modal({ delay: 0.12 + i * 0.13, f: 880 * Math.pow(2, (st + rand(-0.3, 0.3)) / 12), ratios: [1, 3.01, 5.2], decay: 0.6, vol: 0.05, hit: 0.2, rev: 0.4 }));
+  },
+  pour(sec = 0.6) { // gunpowder trickling down the barrel
+    SND.noise({ type: 'bandpass', f: 4500, q: 0.8, dur: sec, vol: 0.085, a: 0.08 });
+    SND.crackle({ dur: sec, density: 110, f: 3800, q: 2.5, grain: 0.005, vol: 0.1 });
+    SND.noise({ delay: 0.05, type: 'bandpass', f: 1400, f1: 900, q: 3, dur: sec, vol: 0.04, a: 0.1 });
+  },
+  snip() { // wire cutters bite through an item
+    SND.modal({ f: 2100, ratios: [1, 2.76, 5.4], decay: 0.12, vol: 0.14, hit: 1.5 });
+    SND.noise({ type: 'highpass', f: 3000, dur: 0.04, vol: 0.18 });
+    SND.crackle({ delay: 0.01, dur: 0.12, density: 120, f: 2500, q: 2, grain: 0.006, vol: 0.12 });
+    SND.tone({ type: 'sine', f: 170, f1: 70, dur: 0.1, vol: 0.2 });
+    this.zapArc();
+  },
+  magnet() {
+    SND.tone({ type: 'sine', f: 60, dur: 0.9, vol: 0.12, a: 0.1 });
+    SND.tone({ type: 'sawtooth', f: 120, dur: 0.9, vol: 0.02, filter: 'lowpass', ff: 600, a: 0.1 });
+    this.whoosh(0.1, 0.8);
+  },
+  phone() { // pick-up clack, line hiss, a garbled whisper through a tiny speaker
+    SND.modal({ f: 1500, ratios: [1, 1.8, 3.2], decay: 0.04, vol: 0.1 });
+    SND.noise({ delay: 0.35, type: 'bandpass', f: 2000, q: 0.8, dur: 1.5, vol: 0.03, a: 0.08 });
+    SND.modal({ delay: 0.4, f: 2600, ratios: [1, 2], decay: 0.02, vol: 0.06 });
+    const tel = this._telBus();
+    let t = 0.55;
+    for (let i = 0; i < 7; i++) { const dur = rand(0.07, 0.14); SND.voice({ delay: t, f0: rand(95, 115), vowel: pick(['a', 'e', 'i', 'o', 'u']), dur, vol: 0.09, breath: 0.5, shift: 1.15, dest: tel }); t += dur + rand(0.01, 0.06); }
+    SND.crackle({ delay: 0.5, dur: 1.2, density: 20, f: 2500, q: 2, grain: 0.01, vol: 0.02 });
+  },
+  _telBus() { // band-limited, slightly overdriven "telephone" bus that follows the current pan
+    const c = SND.ctx, inp = c.createGain(), hp = c.createBiquadFilter(), lp = c.createBiquadFilter(), ws = c.createWaveShaper();
+    hp.type = 'highpass'; hp.frequency.value = 450; lp.type = 'lowpass'; lp.frequency.value = 3000; ws.curve = SND.softCurve;
+    inp.connect(hp); hp.connect(ws); ws.connect(lp); SND.route(lp, {});
+    return inp;
+  },
+  boxRattle(sec = 0.42) {
+    for (let i = 0; i < 6; i++) SND.modal({ delay: i * sec / 6 + rand(0, 0.02), f: rand(250, 420), ratios: [1, 2.4], decay: 0.04, vol: 0.08, hit: 1.3 });
+    for (let i = 0; i < 6; i++) SND.modal({ delay: Math.random() * sec, f: rand(1200, 2500), ratios: [1, 2.3], decay: 0.03, vol: 0.04 });
+  },
+  pop() {
+    SND.noise({ type: 'bandpass', f: 700, q: 0.8, dur: 0.12, vol: 0.3, a: 0.002 });
+    SND.tone({ type: 'sine', f: 160, f1: 60, dur: 0.12, vol: 0.25 });
+    this.glint(); this.paper();
+  },
+  // ---------------- bodies & voices ----------------
+  hit() { // losing a charge to an item
+    SND.tone({ type: 'sine', f: 90, f1: 38, dur: 0.3, vol: 0.55 });
+    SND.noise({ type: 'lowpass', f: 600, dur: 0.1, vol: 0.25 });
+    SND.tone({ delay: 0.02, type: 'sawtooth', f: 60, f1: 30, dur: 0.2, vol: 0.1, filter: 'lowpass', ff: 300 });
+  },
+  fall(d = 0) { // body hits the floor, chair clatters
+    SND.tone({ delay: d, type: 'sine', f: 70, f1: 32, dur: 0.4, vol: 0.6 });
+    SND.noise({ delay: d, type: 'lowpass', f: 700, f1: 150, dur: 0.3, vol: 0.35 });
+    SND.modal({ delay: d + 0.05, f: 480, ratios: MATS.metal.ratios, decay: 0.4, vol: 0.06, rev: 0.4 });
+  },
+  step(v = 1) { // shoe on concrete
+    SND.tone({ type: 'sine', f: 95, f1: 45, dur: 0.12, vol: 0.3 * v });
+    SND.noise({ type: 'lowpass', f: 900, dur: 0.06, vol: 0.15 * v });
+    SND.noise({ delay: 0.02, type: 'bandpass', f: 3000, q: 1.5, dur: 0.07, vol: 0.04 * v, a: 0.01 });
+  },
+  chair() { // dragged out, sat on
+    SND.amNoise({ f: 700, f1: 520, q: 6, rate: 38, rate1: 24, dur: 0.45, vol: 0.13, a: 0.03 });
+    SND.tone({ type: 'sawtooth', f: 38, f1: 24, dur: 0.45, vol: 0.05, filter: 'bandpass', ff: 700, q: 9 });
+    SND.modal({ delay: 0.5, f: 300, ratios: MATS.wood.ratios, decay: 0.08, vol: 0.15, hit: 0.8 });
+    SND.tone({ delay: 0.5, type: 'sine', f: 100, f1: 50, dur: 0.15, vol: 0.3 });
+    SND.modal({ delay: 0.55, f: 520, ratios: [1, 2.1], decay: 0.25, vol: 0.02, hit: 0 });
+  },
+  door() { // bathroom door: latch, creak, bang against the wall
+    SND.modal({ f: 900, ratios: MATS.metal.ratios, decay: 0.15, vol: 0.15, hit: 1 });
+    SND.tone({ type: 'sawtooth', f: 22, f1: 14, slide: 0.5, dur: 0.55, vol: 0.14, filter: 'bandpass', ff: 850, q: 10, a: 0.02 });
+    SND.tone({ type: 'sawtooth', f: 31, f1: 19, dur: 0.5, vol: 0.08, filter: 'bandpass', ff: 1300, q: 12, a: 0.03 });
+    SND.modal({ delay: 0.42, f: 95, ratios: MATS.wood.ratios, decay: 0.35, vol: 0.35, hit: 0.8, rev: 0.6 });
+    SND.tone({ delay: 0.42, type: 'sine', f: 85, f1: 35, dur: 0.45, vol: 0.5 });
+    SND.noise({ delay: 0.42, type: 'lowpass', f: 1600, f1: 300, dur: 0.35, vol: 0.3, rev: 0.7 });
+    SND.modal({ delay: 0.43, f: 1800, ratios: [1, 2.3, 3.7], decay: 0.3, vol: 0.03 });
+  },
+  gasp() { // the player comes back
+    SND.noise({ type: 'bandpass', f: 900, f1: 2400, q: 1.1, dur: 0.55, vol: 0.35, a: 0.06 });
+    SND.voice({ f0: 170, f1: 240, vowel: 'ah', dur: 0.45, vol: 0.07, breath: 1.2, a: 0.05 });
+    SND.noise({ delay: 0.6, type: 'lowpass', f: 1300, f1: 400, dur: 0.8, vol: 0.1, a: 0.05 });
+  },
+  laugh() { // the dealer: "heh heh heh"
+    const n = randi(4, 6), f0 = rand(100, 118);
+    SND.voice({ f0: f0 * 0.9, vowel: 'ah', dur: 0.12, vol: 0.08, breath: 1.5, a: 0.03 });
+    for (let i = 0; i < n; i++) {
+      const d = 0.08 + i * rand(0.15, 0.18), f = f0 * (1 - i * 0.045), last = i === n - 1;
+      SND.noise({ delay: d, type: 'bandpass', f: 1400, q: 0.8, dur: 0.05, vol: 0.1, a: 0.005 });
+      SND.voice({ delay: d + 0.025, f0: f * 1.08, f1: f * 0.9, vowel: last ? 'ah' : 'e', dur: last ? 0.22 : 0.12, vol: 0.25, breath: 0.35, wobble: 0.04, rev: 0.25, a: 0.012, grit: 1 });
+    }
+  },
+  grunt() { SND.voice({ f0: 92, f1: 70, vowel: 'u', dur: 0.2, vol: 0.16, breath: 0.6, a: 0.01, grit: 1 }); },
+  murmur() { // the dealer's voice while his text types out
+    const t = sndNow();
+    if (t - this._mt < 0.075) return;
+    this._mt = t;
+    SND.voice({ f0: rand(78, 96), f1: rand(70, 90), vowel: pick(['a', 'e', 'o', 'u', 'ah']), dur: rand(0.06, 0.1), vol: 0.2, breath: 0.25, grit: 1, a: 0.01, wobble: 0.03 });
+    SND.tone({ type: 'square', f: rand(90, 120), dur: 0.04, vol: 0.04, filter: 'lowpass', ff: 600 });
+  },
+  // ---------------- UI ----------------
+  type() { // waiver keyboard
+    SND.modal({ f: rand(1600, 2100), ratios: [1, 2.3, 3.9], decay: 0.02, vol: 0.06, hit: 1.2 });
+    SND.tone({ type: 'sine', f: 160, f1: 90, dur: 0.03, vol: 0.06 });
+  },
+  blip(f = 880, d = 0) {
+    SND.tone({ delay: d, type: 'square', f, dur: 0.045, vol: 0.035, filter: 'lowpass', ff: f * 3 });
+    SND.tone({ delay: d, type: 'sine', f: f * 2, dur: 0.03, vol: 0.02 });
+  },
+  error() {
+    SND.tone({ type: 'square', f: 110, dur: 0.16, vol: 0.06, filter: 'lowpass', ff: 900 });
+    SND.tone({ type: 'square', f: 104, dur: 0.16, vol: 0.06, delay: 0.02, filter: 'lowpass', ff: 900 });
+    SND.modal({ f: 800, ratios: [1, 2], decay: 0.02, vol: 0.05 });
+  },
+};
+// S.at(pos).sound(): the next call plays from that world position. Nested calls inherit it.
+S.at = pos => { S._pos = pos || null; return S; };
+for (const k of Object.keys(S)) {
+  const f = S[k];
+  if (typeof f !== 'function' || k === 'at' || k[0] === '_') continue;
+  S[k] = function (...args) {
+    const pos = S._pos; S._pos = null;
+    if (!SND.ctx) return;
+    if (!pos) return f.apply(S, args);
+    const saved = [SND.curPan, SND.curGain, SND.curRev], sp = spatial(pos);
+    SND.curPan = sp.pan; SND.curGain = saved[1] * sp.gain; SND.curRev = saved[2] + sp.rev;
+    try { return f.apply(S, args); } finally { [SND.curPan, SND.curGain, SND.curRev] = saved; }
+  };
+}
+
+// =====================================================================
+//  AMBIENCE — room tone, mains hum of the stage lights, and the odd
+//  creak / knock / drip somewhere in the dark
+// =====================================================================
+const AMB = {
+  nodes: null, kind: null, timer: 0,
+  start(kind = 'room') {
+    if (!SND.ctx) return;
+    if (this.nodes && this.kind === kind) return;
+    this.stop(); this.kind = kind;
+    const ctx = SND.ctx, bath = kind === 'bath', g = ctx.createGain(), srcs = [];
+    g.gain.value = 0; g.connect(SND.sfx);
+    const osc = (type, f, v, filt) => {
+      const o = ctx.createOscillator(); o.type = type; o.frequency.value = f;
+      const og = ctx.createGain(); og.gain.value = v; o.connect(og);
+      if (filt) { const fl = ctx.createBiquadFilter(); fl.type = filt[0]; fl.frequency.value = filt[1]; fl.Q.value = filt[2] || 1; og.connect(fl); fl.connect(g); } else og.connect(g);
+      srcs.push(o); return o;
+    };
+    // dark room tone
+    const n1 = ctx.createBufferSource(); n1.buffer = SND.noiseBuf; n1.loop = true;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = bath ? 700 : 170; lp.Q.value = 0.3;
+    const ng = ctx.createGain(); ng.gain.value = bath ? 0.035 : 0.09;
+    n1.connect(lp); lp.connect(ng); ng.connect(g); srcs.push(n1);
+    // slow "breathing" air through the vents
+    const n2 = ctx.createBufferSource(); n2.buffer = SND.noiseBuf; n2.loop = true;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = bath ? 2400 : 1100; bp.Q.value = 0.5;
+    const ag = ctx.createGain(); ag.gain.value = 0.006;
+    const lfo = ctx.createOscillator(); lfo.frequency.value = 0.07; const lg = ctx.createGain(); lg.gain.value = 0.005; lfo.connect(lg); lg.connect(ag.gain);
+    n2.connect(bp); bp.connect(ag); ag.connect(g); srcs.push(n2, lfo);
+    // mains hum: ballasts of the stage lights / fluorescent tube in the bathroom
+    [50, 100, 150, 200].forEach((f, i) => osc('sine', f, [0.022, 0.011, 0.005, 0.003][i] * (bath ? 0.6 : 1)));
+    if (bath) osc('sawtooth', 100, 0.004, ['bandpass', 3000, 1]);
+    else osc('sawtooth', 50.3, 0.006, ['lowpass', 240, 0.7]);
+    const t = ctx.currentTime;
+    srcs.forEach(s => s.start(t, s.buffer ? Math.random() : undefined));
+    g.gain.linearRampToValueAtTime(1, t + 1.5);
+    this.nodes = { g, srcs };
+    this.schedule();
+  },
+  schedule() {
+    clearTimeout(this.timer);
+    if (!this.kind) return;
+    this.timer = setTimeout(() => { if (this.nodes && !document.hidden && !clock.paused) this.event(); this.schedule(); }, rand(3500, 9000));
+  },
+  event() {
+    const pan = rand(-0.85, 0.85), r = Math.random();
+    if (this.kind === 'bath') {
+      if (r < 0.7) { // drip into the sink
+        const f = rand(900, 1500);
+        SND.tone({ type: 'sine', f, f1: f * 2.2, dur: 0.05, vol: 0.05, pan, rev: 0.6 });
+        if (Math.random() < 0.5) SND.tone({ delay: rand(0.4, 0.9), type: 'sine', f: f * 1.1, f1: f * 2.4, dur: 0.05, vol: 0.03, pan, rev: 0.6 });
+      } else SND.modal({ f: rand(140, 220), ratios: MATS.metal.ratios, decay: 0.6, vol: 0.03, hit: 0.3, pan, rev: 0.8 }); // pipe knock
+      return;
+    }
+    if (r < 0.3) SND.modal({ f: rand(160, 320), ratios: MATS.metal.ratios, decay: 1.2, vol: 0.025, hit: 0.4, pan, rev: 0.9 });          // distant metal knock
+    else if (r < 0.5) SND.tone({ type: 'sawtooth', f: rand(12, 20), f1: rand(8, 14), dur: rand(0.8, 1.6), vol: 0.05, filter: 'bandpass', ff: rand(450, 800), q: 9, a: 0.2, pan, rev: 0.6 }); // pipe creak
+    else if (r < 0.65) { SND.tone({ type: 'sine', f: 55, f1: 35, dur: 0.5, vol: 0.12, pan, rev: 0.9 }); SND.noise({ type: 'lowpass', f: 300, dur: 0.3, vol: 0.05, pan, rev: 0.9 }); } // something heavy upstairs
+    else if (r < 0.8) for (let i = 0; i < 5; i++) SND.modal({ delay: i * rand(0.05, 0.1), f: rand(2000, 3500), ratios: [1, 2.7], decay: 0.06, vol: 0.01, pan, rev: 0.7 }); // chain
+    else if (r < 0.92) SND.noise({ type: 'bandpass', f: 600, f1: 1200, q: 0.8, dur: 2.2, vol: 0.025, a: 1.0, pan, rev: 0.5 }); // air from a vent
+    else SND.modal({ f: rand(3000, 4000), ratios: [1, 2.2], decay: 0.03, vol: 0.02, pan, rev: 0.4 }); // electrical tick
+  },
+  stop() {
+    clearTimeout(this.timer); this.kind = null;
+    if (!this.nodes || !SND.ctx) return;
+    const n = this.nodes, t = SND.ctx.currentTime; this.nodes = null;
+    n.g.gain.cancelScheduledValues(t); n.g.gain.setValueAtTime(n.g.gain.value, t); n.g.gain.linearRampToValueAtTime(0, t + 0.6);
+    n.srcs.forEach(x => x.stop(t + 0.7));
+  },
+};
 
 // =====================================================================
 //  RENDERER + RETRO POST PROCESSING (low-res, ordered dither, grain)
@@ -2169,25 +2698,24 @@ const ITEMS = {
   // ---------------- classic ----------------
   glass: {
     name: 'MAGNIFYING GLASS', pool: 'classic', desc: 'CHECK THE CURRENT ROUND IN THE CHAMBER.',
-    async use(u) { S.glass(); await wait(600); await reveal(u, 0, true); },
+    async use(u) { await wait(600); await reveal(u, 0, true); },
   },
   cig: {
     name: 'CIGARETTE PACK', pool: 'classic', desc: 'TAKES THE EDGE OFF. REGAIN 1 CHARGE.',
     async use(u, c) {
-      S.cig(); await wait(1800);
+      await wait(1800);
       if (isP(u)) G.stats.cigs++;
       await heal(u, 1);
     },
   },
   beer: {
     name: 'BEER', pool: 'classic', desc: 'RACKS THE SHOTGUN. EJECTS THE CURRENT SHELL.',
-    async use(u) { S.beer(); await wait(1600); if (isP(u)) G.stats.beer += 330; await ejectShells(u, 1); },
+    async use(u) { await wait(1600); if (isP(u)) G.stats.beer += 330; await ejectShells(u, 1); },
   },
   saw: {
     name: 'HAND SAW', pool: 'classic', desc: 'SHOTGUN DEALS 2 DAMAGE.',
     can: () => G.gun.saw ? 'THE BARREL IS ALREADY SAWED OFF.' : null,
     async use(u) {
-      S.saw();
       await wait(1250);
       G.gun.saw = true; setSawed(true); drawDisplay();
       msg('THE SHOTGUN NOW DEALS 2 DAMAGE.', 'live', 1800);
@@ -2196,13 +2724,13 @@ const ITEMS = {
   cuffs: {
     name: 'HANDCUFFS', pool: 'classic', desc: 'THE OPPONENT SKIPS THEIR NEXT TURN.',
     can: u => opp(u).cuff ? `${nameOf(opp(u))} ${isP(opp(u)) ? 'ARE' : 'IS'} ALREADY CUFFED.` : null,
-    async use(u) { S.cuffs(); opp(u).cuff = 2; await wait(700); drawDisplay(); msg(isP(u) ? 'THE DEALER SKIPS HIS NEXT TURN.' : 'YOU SKIP YOUR NEXT TURN.', 'gold', 1800); },
+    async use(u) { opp(u).cuff = 2; await wait(700); drawDisplay(); msg(isP(u) ? 'THE DEALER SKIPS HIS NEXT TURN.' : 'YOU SKIP YOUR NEXT TURN.', 'gold', 1800); },
   },
   // ---------------- double or nothing ----------------
   phone: {
     name: 'BURNER PHONE', pool: 'don', desc: 'A MYSTERIOUS CALLER GIVES YOU AN INSIGHT FROM THE FUTURE.',
     async use(u) {
-      S.phone(); await wait(900);
+      await wait(900);
       const n = G.shells.length;
       if (n <= 1) { if (isP(u)) { msg('HOW UNFORTUNATE...', 'dimt', 2000); speak('how unfortunate'); } await wait(800); return; }
       const idx = randi(1, n - 1);
@@ -2212,9 +2740,10 @@ const ITEMS = {
   inverter: {
     name: 'INVERTER', pool: 'don', desc: 'SWAPS THE POLARITY OF THE CURRENT SHELL IN THE CHAMBER.',
     async use(u) {
-      S.inverter(); await wait(500);
+      await wait(500);
       const s = G.shells[0];
       if (s.seenP) { G.pk[s.live ? 'live' : 'blank']--; G.pk[s.live ? 'blank' : 'live']++; } else G.pk.unsure = true;
+      dkFlip(s);
       s.live = !s.live;
       if (isP(u)) msg('POLARITY INVERTED.', 'gold', 1400);
       await wait(400);
@@ -2224,7 +2753,7 @@ const ITEMS = {
     name: 'ADRENALINE', pool: 'don', desc: 'STEAL AN ITEM FROM THE OPPONENT AND USE IT IMMEDIATELY.',
     can: u => opp(u).items.some(it => it && it.id !== 'adrenaline') ? null : 'NOTHING TO STEAL.',
     async use(u) {
-      S.inject(); await wait(700);
+      await wait(700);
       const slot = await chooseOppItem(u, 'adrenaline');
       if (slot < 0) { msg('TOO SLOW.', 'dimt', 1400); return; }
       const o = opp(u), it = o.items[slot]; o.items[slot] = null;
@@ -2240,7 +2769,7 @@ const ITEMS = {
   medicine: {
     name: 'EXPIRED MEDICINE', pool: 'don', desc: '40% CHANCE TO REGAIN 2 CHARGES. IF NOT, LOSE 1 CHARGE.',
     async use(u) {
-      S.pills(); await wait(1100);
+      await wait(1100);
       if (Math.random() < 0.4) { msg('IT WORKED.', 'good', 1400); await heal(u, 2); }
       else { msg('IT WAS A BAD BATCH.', 'live', 1400); S.bad(); await hurt(u, 1, 'item'); }
     },
@@ -2248,20 +2777,20 @@ const ITEMS = {
   // ---------------- new in this remake ----------------
   xray: {
     name: 'X-RAY GOGGLES', pool: 'new', desc: 'SEE THROUGH THE STEEL: REVEALS THE CURRENT AND THE NEXT SHELL.',
-    async use(u) { S.glass(); SND.tone({ type: 'sine', f: 60, dur: 0.8, vol: 0.1 }); await wait(700); await reveal(u, 0, true); if (G.shells.length > 1) { await wait(isP(u) ? 1500 : 200); await reveal(u, 1, true); } },
+    async use(u) { await wait(700); await reveal(u, 0, true); if (G.shells.length > 1) { await wait(isP(u) ? 1500 : 200); await reveal(u, 1, true); } },
   },
   flashlight: {
     name: 'FLASHLIGHT', pool: 'new', desc: 'SHINE IT DOWN THE MAGAZINE TUBE: REVEALS THE LAST SHELL.',
-    async use(u) { S.blip(1500); await wait(700); await reveal(u, G.shells.length - 1, true); },
+    async use(u) { await wait(700); await reveal(u, G.shells.length - 1, true); },
   },
   tarot: {
     name: 'TAROT CARD', pool: 'new', desc: 'SEE THE ENTIRE SEQUENCE OF SHELLS. COSTS 1 CHARGE.',
     can: u => u.hp < 2 ? 'IT DEMANDS A CHARGE YOU CANNOT SPARE.' : null,
     async use(u) {
-      S.magic(); await wait(900);
+      await wait(900);
       await hurt(u, 1, 'item');
       if (u.hp <= 0) return;
-      G.shells.forEach(s => { if (isP(u)) s.seenP = true; else s.seenD = true; });
+      G.shells.forEach(s => { if (isP(u)) s.seenP = true; else dkSee(s); });
       if (isP(u)) {
         const seq = G.shells.map(s => `<span class="${s.live ? 'live' : 'blank'}">${s.live ? 'LIVE' : 'BLANK'}</span>`).join(' · ');
         msg(seq, '', 4200, true); await wait(1600);
@@ -2270,7 +2799,7 @@ const ITEMS = {
   },
   whiskey: {
     name: 'WHISKEY', pool: 'new', desc: 'A STRONGER DRINK. RACKS THE SHOTGUN TWICE: EJECTS TWO SHELLS.',
-    async use(u) { S.bottle(); await wait(1500); await ejectShells(u, Math.min(2, G.shells.length)); },
+    async use(u) { await wait(1500); await ejectShells(u, Math.min(2, G.shells.length)); },
   },
   liveshell: {
     name: 'LOOSE SHELL (LIVE)', pool: 'new', desc: 'SLIPS AN EXTRA LIVE ROUND INTO THE SHOTGUN AT A RANDOM POSITION.',
@@ -2290,17 +2819,17 @@ const ITEMS = {
   vest: {
     name: 'KEVLAR VEST', pool: 'new', desc: 'ABSORBS THE NEXT SHOT THAT WOULD HURT YOU.',
     can: u => u.vest ? 'ALREADY WEARING ONE.' : null,
-    async use(u) { S.tape(); u.vest = true; await wait(600); drawDisplay(); msg(`${isP(u) ? 'YOU ARE' : 'THE DEALER IS'} WEARING A VEST.`, 'gold', 1500); },
+    async use(u) { u.vest = true; await wait(600); drawDisplay(); msg(`${isP(u) ? 'YOU ARE' : 'THE DEALER IS'} WEARING A VEST.`, 'gold', 1500); },
   },
   mirror: {
     name: 'POCKET MIRROR', pool: 'new', desc: 'THE NEXT LIVE SHOT YOUR OPPONENT FIRES AT YOU IS REFLECTED BACK.',
     can: u => u.mirror ? 'ALREADY ACTIVE.' : null,
-    async use(u) { S.magic(); u.mirror = true; await wait(600); drawDisplay(); msg('THE MIRROR IS WATCHING.', 'gold', 1500); },
+    async use(u) { u.mirror = true; await wait(600); drawDisplay(); msg('THE MIRROR IS WATCHING.', 'gold', 1500); },
   },
   coin: {
     name: 'LUCKY COIN', pool: 'new', desc: 'FLIP IT. HEADS: THE OPPONENT LOSES 1 CHARGE. TAILS: YOU DO.',
     async use(u, c) {
-      S.coin(); await wait(1500);
+      await wait(1500);
       if ((c && c.rnd !== undefined ? c.rnd : Math.random()) < 0.5) { msg('HEADS.', 'good', 1400); await wait(400); await hurt(opp(u), 1, 'item'); }
       else { msg('TAILS.', 'live', 1400); await wait(400); await hurt(u, 1, 'item'); }
     },
@@ -2308,14 +2837,14 @@ const ITEMS = {
   dice: {
     name: "DEVIL'S DIE", pool: 'new', desc: 'ROLL IT. 1: LOSE A CHARGE · 2: SHUFFLE · 3: SEE SHELL · 4: 2 ITEMS · 5: SAW · 6: +2 CHARGES.',
     async use(u, c) {
-      S.dice(); await wait(1000);
+      await wait(1000);
       const r = 1 + Math.floor((c && c.rnd !== undefined ? c.rnd : Math.random()) * 6);
       msg(`${isP(u) ? 'YOU' : 'THE DEALER'} ROLLED A ${r}.`, r === 1 ? 'live' : r === 6 ? 'good' : 'gold', 1500); await wait(1100);
       if (r === 1) await hurt(u, 1, 'item');
       else if (r === 2) await shuffleShells();
       else if (r === 3) await reveal(u, 0, true);
       else if (r === 4) await giveItems(u, 2);
-      else if (r === 5) { if (!G.gun.saw) { S.saw(); await wait(1000); G.gun.saw = true; setSawed(true); } else { G.gun.powder = true; } drawDisplay(); }
+      else if (r === 5) { if (!G.gun.saw) { S.at(wpos(W.gun)).saw(); await wait(1000); G.gun.saw = true; setSawed(true); } else { G.gun.powder = true; } drawDisplay(); }
       else await heal(u, 2);
     },
   },
@@ -2326,7 +2855,7 @@ const ITEMS = {
       const slot = await chooseOppItem(u, 'cutters');
       if (slot < 0) return;
       const o = opp(u), it = o.items[slot]; o.items[slot] = null;
-      S.metal(); sparks(it.obj.position.clone().add(V3(0, 0.03, 0)), 16);
+      S.at(it.obj.position).snip(); sparks(it.obj.position.clone().add(V3(0, 0.03, 0)), 16);
       msg(`${ITEMS[it.id].name} DESTROYED.`, 'live', 1500);
       await discardObj(it.obj, true);
     },
@@ -2339,84 +2868,87 @@ const ITEMS = {
       if (slot < 0) return;
       const o = opp(u), it = o.items[slot]; o.items[slot] = null;
       const free = u.items.indexOf(null);
-      S.zapSmall();
+      S.at(it.obj.position).magnet();
       if (free < 0) { msg('NO ROOM. IT FALLS OFF THE TABLE.', 'dimt', 1500); await discardObj(it.obj); return; }
       msg(`${ITEMS[it.id].name} ${isP(u) ? 'IS YOURS NOW' : 'WAS TAKEN'}.`, 'gold', 1500);
       u.items[free] = it; it.obj.userData.target = null;
       await arcTo(it.obj, SLOT_POS[u.id][free], 600);
+      S.at(it.obj.position).place(matOf(it.id));
       setItemTarget(u, free);
     },
   },
   tape: {
     name: 'DUCT TAPE', pool: 'new', desc: "TAPES THE OPPONENT'S HANDS: THEY CANNOT USE ITEMS ON THEIR NEXT TURN.",
     can: u => opp(u).taped ? 'ALREADY TAPED.' : null,
-    async use(u) { S.tape(); opp(u).taped = true; await wait(700); drawDisplay(); msg(isP(u) ? "THE DEALER'S HANDS ARE TAPED." : 'YOUR HANDS ARE TAPED.', 'gold', 1600); },
+    async use(u) { opp(u).taped = true; await wait(700); drawDisplay(); msg(isP(u) ? "THE DEALER'S HANDS ARE TAPED." : 'YOUR HANDS ARE TAPED.', 'gold', 1600); },
   },
   fuse: {
     name: 'SPARE FUSE', pool: 'new', desc: 'REPAIRS A CUT DEFIBRILLATOR AND REGAINS 1 CHARGE.',
-    async use(u) { S.zapSmall(); await wait(600); if (u.cut) { u.cut = false; msg('DEFIBRILLATOR REPAIRED.', 'good', 1500); S.power(); } await heal(u, 1); },
+    async use(u) { await wait(600); if (u.cut) { u.cut = false; msg('DEFIBRILLATOR REPAIRED.', 'good', 1500); S.power(); } await heal(u, 1); },
   },
   battery: {
     name: 'CAR BATTERY', pool: 'new', desc: 'A BACKUP CHARGE: THE NEXT TIME YOU WOULD DIE, YOU SURVIVE WITH 1 CHARGE.',
     can: u => u.battery ? 'ALREADY HOOKED UP.' : null,
-    async use(u) { S.zap(); await wait(1300); u.battery = true; drawDisplay(); msg('BACKUP CHARGE READY.', 'gold', 1500); },
+    async use(u) { await wait(1300); u.battery = true; drawDisplay(); msg('BACKUP CHARGE READY.', 'gold', 1500); },
   },
   energy: {
     name: 'ENERGY DRINK', pool: 'new', desc: 'IF YOUR NEXT SHOT AT THE OPPONENT IS A BLANK, YOU KEEP YOUR TURN.',
     can: u => u.energy ? 'ALREADY BUZZING.' : null,
-    async use(u) { S.beer(); await wait(1400); u.energy = true; drawDisplay(); msg(`${isP(u) ? 'YOU FEEL' : 'THE DEALER FEELS'} WIRED.`, 'gold', 1400); },
+    async use(u) { await wait(1400); u.energy = true; drawDisplay(); msg(`${isP(u) ? 'YOU FEEL' : 'THE DEALER FEELS'} WIRED.`, 'gold', 1400); },
   },
   gunpowder: {
     name: 'GUNPOWDER', pool: 'new', desc: 'PACKS THE NEXT SHELL: A LIVE ROUND DEALS +1 DAMAGE.',
     can: () => G.gun.powder ? 'ALREADY PACKED.' : null,
-    async use(u) { S.pills(); await wait(900); G.gun.powder = true; drawDisplay(); msg('THE NEXT LIVE ROUND HITS HARDER.', 'live', 1500); },
+    async use(u) { await wait(900); G.gun.powder = true; drawDisplay(); msg('THE NEXT LIVE ROUND HITS HARDER.', 'live', 1500); },
   },
   cigar: {
     name: 'CUBAN CIGAR', pool: 'new', desc: 'THE GOOD STUFF. REGAIN 2 CHARGES.',
-    async use(u) { S.cig(); await wait(1800); if (isP(u)) G.stats.cigs++; await heal(u, 2); },
+    async use(u) { await wait(1800); if (isP(u)) G.stats.cigs++; await heal(u, 2); },
   },
   pills: {
     name: 'PAINKILLERS', pool: 'new', desc: 'REGAIN 1 CHARGE NOW AND 1 MORE AT THE START OF YOUR NEXT TURN.',
-    async use(u) { S.pills(); await wait(900); await heal(u, 1); if (!u.cut) { u.pills = true; drawDisplay(); } },
+    async use(u) { await wait(900); await heal(u, 1); if (!u.cut) { u.pills = true; drawDisplay(); } },
   },
   rosary: {
     name: 'ROSARY', pool: 'new', desc: 'SAY A PRAYER. 50%: THE CURRENT SHELL BECOMES A BLANK.',
     async use(u) {
-      S.magic(); await wait(1300);
+      await wait(1300);
       if (Math.random() < 0.5) {
+        S.at(wpos(W.gun)).glint();
         const s = G.shells[0];
         if (s.live) { if (s.seenP) { G.pk.live--; G.pk.blank++; } else G.pk.unsure = true; }
-        s.live = false; if (isP(u)) s.seenP = true; else s.seenD = true;
-        msg(isP(u) ? 'YOUR PRAYER WAS HEARD. THE CURRENT SHELL IS A BLANK.' : 'THE DEALER\'S PRAYER WAS HEARD.', 'blank', 2000);
+        dkForceBlank(s); s.live = false; s.seenP = true;
+        msg(isP(u) ? 'YOUR PRAYER WAS HEARD. THE CURRENT SHELL IS A BLANK.' : 'THE DEALER\'S PRAYER WAS HEARD. THE CURRENT SHELL IS A BLANK.', 'blank', 2000);
       } else msg('NOBODY IS LISTENING.', 'dimt', 1600);
       await wait(600);
     },
   },
   box: {
     name: 'MYSTERY BOX', pool: 'new', desc: 'OPEN IT. CONTAINS 2 RANDOM ITEMS.',
-    async use(u) { S.box(); await wait(700); await giveItems(u, 2); },
+    async use(u) { await wait(700); await giveItems(u, 2); },
   },
   contract: {
     name: 'BLOOD CONTRACT', pool: 'new', desc: 'SIGN AWAY 1 CHARGE. RECEIVE 3 RANDOM ITEMS.',
     can: u => u.hp < 2 ? 'YOU HAVE NOTHING LEFT TO SIGN AWAY.' : null,
-    async use(u) { S.pen(); await wait(800); await hurt(u, 1, 'item'); if (u.hp <= 0) return; await giveItems(u, 3); },
+    async use(u) { await wait(800); await hurt(u, 1, 'item'); if (u.hp <= 0) return; await giveItems(u, 3); },
   },
   voodoo: {
     name: 'VOODOO DOLL', pool: 'new', desc: 'THE NEXT TIME YOU TAKE DAMAGE, YOUR OPPONENT FEELS IT TOO.',
     can: u => u.voodoo ? 'THE DOLL IS ALREADY BOUND.' : null,
-    async use(u) { S.magic(); S.bad(); u.voodoo = true; await wait(900); drawDisplay(); msg('YOUR PAIN IS SHARED.', 'gold', 1500); },
+    async use(u) { u.voodoo = true; await wait(900); S.bad(); drawDisplay(); msg('YOUR PAIN IS SHARED.', 'gold', 1500); },
   },
   poison: {
     name: 'RAT POISON', pool: 'new', desc: "SPIKE THE OPPONENT: 50% CHANCE THEY LOSE 1 CHARGE AT THE START OF THEIR NEXT TURN.",
     can: u => opp(u).poison ? 'ALREADY POISONED.' : null,
-    async use(u) { S.bottle(); await wait(900); opp(u).poison = true; drawDisplay(); msg(isP(u) ? 'THE DEALER HAS BEEN POISONED.' : 'YOU HAVE BEEN POISONED.', 'good', 1500); },
+    async use(u) { await wait(900); opp(u).poison = true; drawDisplay(); msg(isP(u) ? 'THE DEALER HAS BEEN POISONED.' : 'YOU HAVE BEEN POISONED.', 'good', 1500); },
   },
   joker: {
     name: 'JOKER', pool: 'new', desc: 'BECOMES A RANDOM ITEM AND IS USED IMMEDIATELY.',
     async use(u, c) {
       const ids = Object.keys(ITEMS).filter(id => !['joker', 'adrenaline', 'cutters', 'magnet'].includes(id) && !(ITEMS[id].can && ITEMS[id].can(u)));
       const id = pick(ids);
-      S.magic(); await wait(700);
+      await wait(700);
+      if (ITEM_SFX[id]) S.at(usePoint(u))[ITEM_SFX[id]]();
       msg(`THE JOKER BECOMES: ${ITEMS[id].name}.`, 'gold', 1800); await wait(900);
       await ITEMS[id].use(u, c);
     },
@@ -2424,8 +2956,16 @@ const ITEMS = {
   burst: {
     name: 'DOUBLE TAP', pool: 'new', desc: 'THE NEXT SHOT FIRES TWO SHELLS AT ONCE.',
     can: () => G.gun.burst ? 'ALREADY RIGGED.' : G.shells.length < 2 ? 'NOT ENOUGH SHELLS.' : null,
-    async use(u) { S.tape(); await wait(700); G.gun.burst = true; drawDisplay(); msg('THE NEXT SHOT FIRES TWO SHELLS.', 'live', 1500); },
+    async use(u) { await wait(700); G.gun.burst = true; drawDisplay(); msg('THE NEXT SHOT FIRES TWO SHELLS.', 'live', 1500); },
   },
+};
+// sound for an item that is used without its own animation (the joker turning into it)
+const ITEM_SFX = {
+  beer: 'canOpen', energy: 'canOpen', whiskey: 'uncork', cig: 'cig', cigar: 'cig', medicine: 'pills', pills: 'pills', adrenaline: 'inject',
+  glass: 'glass', flashlight: 'flashClick', xray: 'goggles', saw: 'saw', inverter: 'inverter', gunpowder: 'pour', burst: 'tape',
+  liveshell: 'load', dummy: 'load', shuffler: 'shake', cuffs: 'cuffs', tape: 'tapeBind', poison: 'splash', vest: 'velcro',
+  battery: 'chargeUp', fuse: 'clamp', mirror: 'glint', rosary: 'beads', voodoo: 'pin', coin: 'coin', dice: 'dice', tarot: 'tarot',
+  contract: 'pen', phone: 'phone', box: 'pop',
 };
 const ITEM_IDS = Object.keys(ITEMS);
 const POOL_WEIGHT = { classic: 3, don: 2, new: 1 };
@@ -2472,7 +3012,7 @@ function setPrompt(t) { $('#prompt').textContent = t || ''; }
 async function say(text, { hold = 1500, speed = 34 } = {}) {
   const el = $('#dialog'); el.textContent = '';
   if (W.dealer) W.dealer.talk = 1;
-  for (const ch of text) { el.textContent += ch; if (ch !== ' ' && ch !== '.') S.type(); await wait(speed); }
+  for (const ch of text) { el.textContent += ch; if (ch !== ' ' && ch !== '.' && W.dealer && !W.dealer.gone) S.at(headPos()).murmur(); await wait(speed); }
   if (W.dealer) W.dealer.talk = 0;
   await wait(hold);
   el.textContent = '';
@@ -2518,6 +3058,48 @@ function setSawed(on, instant = false) {
   tween(on ? 250 : 600, k => { b.scale.x = from + (to - from) * k; });
 }
 function pkRemove(s) { G.pk[s.live ? 'live' : 'blank'] = Math.max(0, G.pk[s.live ? 'live' : 'blank'] - 1); }
+// ---------- what the dealer knows ----------
+// No peeking: the dealer only knows the announced live/blank counts, the shells he saw with his own
+// items and everything that happens in the open. G.dk = live/blank counts among the shells he has no
+// individual info about (the "pool"). A shell flipped while he didn't know it (inverter) leaves the pool
+// with its own belief; once it comes out, the pool counts are corrected.
+function dkQ() {
+  const d = G.dk, tot = d.live + d.blank;
+  return tot > 1e-6 ? clamp(d.live / tot, 0, 1) : 0.5;
+}
+function dkClamp() { G.dk.live = Math.max(0, G.dk.live); G.dk.blank = Math.max(0, G.dk.blank); }
+function dkSee(s) {
+  if (!s || s.seenD) return;
+  if (s.flipD) {
+    const orig = s.flips % 2 ? !s.live : s.live;
+    G.dk.live += s.qD - (orig ? 1 : 0); G.dk.blank += (1 - s.qD) - (orig ? 0 : 1);
+    s.flipD = false;
+  } else G.dk[s.live ? 'live' : 'blank'] -= 1;
+  s.seenD = true; dkClamp();
+}
+function dkRemove(s) { dkSee(s); }                       // a fired / ejected shell is seen by everyone
+function dkFlip(s) {                                     // call BEFORE the shell's polarity is swapped
+  if (!s || s.seenD) return;
+  if (s.flipD) { s.pD = 1 - s.pD; s.flips++; return; }
+  const q = dkQ();
+  G.dk.live -= q; G.dk.blank -= 1 - q; dkClamp();
+  Object.assign(s, { flipD: true, qD: q, pD: 1 - q, flips: 1 });
+}
+function dkForceBlank(s) {                               // rosary: the current shell is now a blank, for sure
+  if (!s || s.seenD) return;
+  if (!s.flipD) { const q = dkQ(); G.dk.live -= q; G.dk.blank -= 1 - q; dkClamp(); }
+  s.flipD = false; s.seenD = true;
+}
+function dkShuffle() {
+  const q = dkQ(); let live = 0;
+  G.shells.forEach(s => { live += s.seenD ? +s.live : s.flipD ? s.pD : q; });
+  G.dk = { live, blank: G.shells.length - live };
+}
+function dealerBelief(i = 0) {
+  const s = G.shells[i]; if (!s) return 0;
+  return s.seenD ? (s.live ? 1 : 0) : s.flipD ? s.pD : dkQ();
+}
+
 
 // ---------- dealer hands ----------
 async function dealerHand(i, pos, ms = 450) { await dealerHandTo(i, pos.clone().add(V3(0, 0.01, -0.03)), ms, { curl: 0.8 }); }
@@ -2555,6 +3137,7 @@ function genShells() {
   const arr = []; for (let i = 0; i < total; i++) arr.push(i < live);
   G.shells = shuffle(arr.slice()).map(l => ({ live: l, seenP: false, seenD: false }));
   G.pk = { live, blank: total - live, unsure: false };
+  G.dk = { live, blank: total - live };
   return shuffle(arr.slice());
 }
 async function reveal(u, idx, show = true) {
@@ -2567,7 +3150,7 @@ async function reveal(u, idx, show = true) {
       if (idx === 0) peekShell(s.live);
       await wait(1500);
     }
-  } else { s.seenD = true; if (show) await wait(500); }
+  } else { dkSee(s); if (show) await wait(500); }
   updateHud();
 }
 function peekShell(live) {
@@ -2580,7 +3163,7 @@ function peekShell(live) {
 }
 async function ejectShells(u, count) {
   for (let i = 0; i < count && G.shells.length; i++) {
-    const s = G.shells.shift(); pkRemove(s);
+    const s = G.shells.shift(); pkRemove(s); dkRemove(s);
     if (isP(u)) G.stats.ejected++;
     await rackAnim([s.live]);
     msg(s.live ? 'A LIVE ROUND WAS EJECTED.' : 'A BLANK WAS EJECTED.', s.live ? 'live' : 'blank', 1600);
@@ -2594,10 +3177,10 @@ async function giveItems(u, n) {
     if (free < 0) { msg('NO ROOM FOR MORE ITEMS.', 'dimt', 1300); await wait(500); break; }
     const id = randomItemId();
     const o = spawnItemObj(id, usePoint(u)); o.scale.setScalar(0.01);
-    S.place(); await animScale(o, 1, 220, ease.back);
+    S.at(o.position).whoosh(0, 0.5); await animScale(o, 1, 220, ease.back);
     if (isP(u)) msg(`+ ${ITEMS[id].name}`, 'gold', 1300);
     u.items[free] = { id, obj: o };
-    await arcTo(o, SLOT_POS[u.id][free], 450, 0.08); S.place(); setItemTarget(u, free);
+    await arcTo(o, SLOT_POS[u.id][free], 450, 0.08); S.at(o.position).place(matOf(id)); setItemTarget(u, free);
     await wait(200);
   }
   updateHud();
@@ -2605,16 +3188,16 @@ async function giveItems(u, n) {
 async function insertShell(live) {
   const idx = randi(0, G.shells.length);
   G.shells.splice(idx, 0, { live, seenP: false, seenD: false });
-  G.pk[live ? 'live' : 'blank']++;
-  S.load(); await wait(350); await rackAnim([]);
+  G.pk[live ? 'live' : 'blank']++; G.dk[live ? 'live' : 'blank']++;
+  await wait(800); await rackAnim([]);
   msg(`AN EXTRA ${live ? 'LIVE ROUND' : 'BLANK'} WAS SLIPPED IN.`, live ? 'live' : 'blank', 1600);
   await wait(900); updateHud();
 }
 async function shuffleShells() {
-  S.dice(); wait(400).then(() => rackAnim([]));
-  shuffle(G.shells); G.shells.forEach(s => { s.seenP = false; s.seenD = false; });
+  wait(1150).then(() => rackAnim([]));
+  dkShuffle(); shuffle(G.shells); G.shells.forEach(s => { s.seenP = false; s.seenD = false; s.flipD = false; });
   msg('THE SHELLS HAVE BEEN SHUFFLED.', 'gold', 1500);
-  await wait(1200); updateHud();
+  await wait(1600); updateHud();
 }
 
 // ---------- charges ----------
@@ -2622,7 +3205,7 @@ async function heal(u, n) {
   if (u.cut) { msg(`${isP(u) ? 'YOUR' : "THE DEALER'S"} DEFIBRILLATOR IS CUT. NO EFFECT.`, 'dimt', 1700); S.error(); await wait(700); return 0; }
   const before = u.hp; u.hp = Math.min(u.max, u.hp + n);
   const d = u.hp - before;
-  if (d > 0) { S.power(); msg(`${isP(u) ? 'YOU' : 'THE DEALER'} REGAINED ${d} CHARGE${d > 1 ? 'S' : ''}.`, 'good', 1500); }
+  if (d > 0) { S.at(wpos(W.displayDev)).power(); msg(`${isP(u) ? 'YOU' : 'THE DEALER'} REGAINED ${d} CHARGE${d > 1 ? 'S' : ''}.`, 'good', 1500); }
   else msg('ALREADY AT FULL CHARGE.', 'dimt', 1400);
   drawDisplay(); updateHud(); await wait(600);
   return d;
@@ -2633,10 +3216,10 @@ async function hurt(u, n, source = 'shot') {
   if (source !== 'shot') {
     if (isP(u)) { post.red = 0.7; animVal(post, 'red', 0, 900); shake(0.6); FX.cam.kick.kick(1.2); FX.cam.roll.kick(rand(-1, 1)); FX.aberr = 0.8; }
     else dealerReact('flinch');
-    SND.tone({ type: 'sine', f: 90, f1: 40, dur: 0.3, vol: 0.5 });
+    S.at(isP(u) ? null : headPos()).hit();
   }
   if (u.hp === 0 && u.battery) {
-    u.battery = false; u.hp = 1; await wait(500); S.zap(); await wait(1200);
+    u.battery = false; u.hp = 1; await wait(500); S.at(wpos(W.displayDev)).zap(); await wait(1200);
     msg(`${isP(u) ? 'YOUR' : "THE DEALER'S"} CAR BATTERY KICKS IN. 1 CHARGE LEFT.`, 'gold', 2000);
   }
   if (u.voodoo) {
@@ -2649,7 +3232,7 @@ async function hurt(u, n, source = 'shot') {
   }
   for (const p of [G.P, G.D]) {
     if (isFinal() && !p.cut && p.hp > 0 && p.hp <= 2) {
-      p.cut = true; S.zapSmall(); SND.tone({ type: 'sawtooth', f: 220, f1: 40, dur: 0.8, vol: 0.12 });
+      p.cut = true; S.at(wpos(W.displayDev)).zapSmall(); SND.tone({ type: 'sawtooth', f: 220, f1: 40, dur: 0.8, vol: 0.12 });
       await wait(400);
       msg(`${isP(p) ? 'YOUR' : "THE DEALER'S"} DEFIBRILLATOR WIRES ARE CUT.`, 'live', 2200);
       await wait(900);
@@ -2666,7 +3249,7 @@ function passTurn(from) {
     msg(isP(to) ? 'YOU ARE CUFFED. YOUR TURN IS SKIPPED.' : 'THE DEALER IS CUFFED. HIS TURN IS SKIPPED.', 'gold', 1800);
     return;
   }
-  if (to.cuff === 1) { to.cuff = 0; S.metal(); msg(isP(to) ? 'YOU BREAK FREE OF THE CUFFS.' : 'THE DEALER BREAKS FREE OF THE CUFFS.', 'dimt', 1500); }
+  if (to.cuff === 1) { to.cuff = 0; msg(isP(to) ? 'YOU BREAK FREE OF THE CUFFS.' : 'THE DEALER BREAKS FREE OF THE CUFFS.', 'dimt', 1500); }
   G.turn = to.id; drawDisplay();
 }
 
@@ -2698,7 +3281,7 @@ async function fire(shooter, target) {
   const lives = fired.filter(s => s.live).length;
   const dmg = lives ? lives * (G.gun.saw ? 2 : 1) + (G.gun.powder ? 1 : 0) : 0;
   if (isP(shooter)) G.stats.shots++;
-  fired.forEach(pkRemove);
+  fired.forEach(s => { pkRemove(s); dkRemove(s); });
   const wasSaw = G.gun.saw;
   G.gun.saw = false; G.gun.powder = false; G.gun.burst = false;
   const selfShot = target === shooter;
@@ -2719,7 +3302,7 @@ async function fire(shooter, target) {
       await applyShot(shooter, target, dmg);
     }
   } else {
-    S.click(); await wait(300);
+    S.at(wpos(W.gun)).click(); await wait(300);
     msg(fired.length > 1 ? 'TWO BLANKS.' : 'BLANK.', 'blank', 1100);
     if (selfShot && isP(shooter)) { calmPlayer(); S.exhale && S.exhale(); dealerReact('tilt'); }
     else if (selfShot) dealerReact('laugh');
@@ -2740,12 +3323,12 @@ async function fire(shooter, target) {
 async function applyShot(shooter, target, dmg) {
   if (dmg <= 0) return;
   if (target !== shooter && target.mirror) {
-    target.mirror = false; S.magic();
+    target.mirror = false; S.glint(); S.magic();
     msg('THE MIRROR REFLECTS THE SHOT!', 'gold', 1800); await wait(500);
     if (shooter.vest) { shooter.vest = false; msg('...BUT THE VEST ABSORBS IT.', 'gold', 1600); drawDisplay(); return; }
     await hurt(shooter, dmg, 'shot'); return;
   }
-  if (target.vest) { target.vest = false; S.thud(); msg('THE VEST ABSORBED THE SHOT.', 'gold', 1800); drawDisplay(); await wait(400); return; }
+  if (target.vest) { target.vest = false; S.at(isP(target) ? null : headPos()).thud(0, 0.7); msg('THE VEST ABSORBED THE SHOT.', 'gold', 1800); drawDisplay(); await wait(400); return; }
   await hurt(target, dmg, 'shot');
 }
 
@@ -2867,7 +3450,7 @@ async function chooseOppItem(u, purpose) {
     const slots = o.items.map((_, i) => i).filter(i => !valid(i));
     if (!slots.length) return -1;
     await wait(500);
-    const s = aiPickSteal(slots, o, purpose);
+    const s = OPT.ai === 'classic' ? aiPickSteal(slots, o, purpose) : smartPickSteal(slots, o, purpose);
     await dealerHand(o.items[s].obj.position.x < 0 ? 0 : 1, o.items[s].obj.position, 400);
     return s;
   }
@@ -2893,10 +3476,16 @@ async function chooseOppItem(u, purpose) {
   return result;
 }
 async function dealerTurn() {
-  const D = G.D;
   W.dealer.look.set(0, TABLE_Y, 0.1);
   setPrompt("DEALER'S TURN");
   await wait(900);
+  if (OPT.ai !== 'classic') { await smartDealerTurn(); setPrompt(''); return; }
+  await classicDealerTurn();
+  setPrompt('');
+}
+// the old gut-feeling dealer (OPTIONS -> DEALER AI -> CLASSIC)
+async function classicDealerTurn() {
+  const D = G.D;
   let uses = 0;
   if (D.taped) { msg("THE DEALER'S HANDS ARE TAPED.", 'dimt', 1500); await wait(900); }
   while (!D.taped && uses < 8) {
@@ -2910,7 +3499,7 @@ async function dealerTurn() {
     if (best < 0 || bs < 20) break;
     await useItemFromSlot(D, best);
     uses++;
-    if (dead() || G.shells.length === 0) { setPrompt(''); return; }
+    if (dead() || G.shells.length === 0) return;
     await wait(450);
   }
   const c = aiCtx();
@@ -2922,8 +3511,156 @@ async function dealerTurn() {
   else if (c.p < 0.5) target = 'self';
   else target = Math.random() < 0.5 ? 'player' : 'self';
   await dealerShoot(target);
-  setPrompt('');
 }
+// =====================================================================
+//  SMART DEALER — gathers info first, heals when hurt, keeps protection up,
+//  stacks saw / powder / cuffs only on shots that will land, disrupts the
+//  player before handing over the turn, and picks targets by the odds.
+// =====================================================================
+const THREAT = { saw: 60, cuffs: 58, glass: 56, adrenaline: 55, xray: 54, inverter: 52, mirror: 50, vest: 46, tarot: 45, battery: 44, gunpowder: 42,
+  burst: 40, magnet: 40, beer: 38, cutters: 38, tape: 36, poison: 34, flashlight: 30, phone: 30, voodoo: 30, whiskey: 30, energy: 30, rosary: 30,
+  box: 25, fuse: 24, medicine: 22, coin: 20, dice: 20, contract: 20, joker: 20, shuffler: 20, liveshell: 18, dummy: 18, cig: 20, cigar: 22, pills: 22 };
+function threatOf(id) {
+  const P = G.P, hurt = P.max - P.hp;
+  if (['cig', 'cigar', 'pills', 'fuse'].includes(id)) return (P.cut && id !== 'fuse') ? 5 : hurt ? 50 : 20;
+  if (id === 'coin') return G.D.hp === 1 ? 55 : 20;
+  return THREAT[id] || 20;
+}
+function dealerCtx() {
+  const D = G.D, P = G.P, p = dealerBelief(0), n = G.shells.length;
+  const cert = p >= 0.999 ? true : p <= 0.001 ? false : null;
+  return { D, P, p, cert, n, p1: n > 1 ? dealerBelief(1) : 0, free: D.items.filter(x => !x).length,
+    has: id => D.items.some(it => it && it.id === id), unknown: G.shells.filter(s => !s.seenD).length };
+}
+function shotDmg() { return (G.gun.saw ? 2 : 1) + (G.gun.powder ? 1 : 0); }
+function chooseTarget(c) {
+  const { D, P, p } = c;
+  if (p >= 0.999) return 'player';
+  if (p <= 0.001) return 'self';
+  if (P.mirror) return 'self';                         // a live at him bounces back; a blank on me keeps the turn
+  if (D.energy || P.cuff === 2) return 'player';       // no tempo lost by shooting him
+  const dmg = shotDmg();
+  let th = P.vest ? 0.55 : 0.45;
+  if (!P.vest && dmg >= P.hp) th = 0.4;                // a chance to finish him
+  if (D.vest) th = Math.max(th, 0.62);                 // my vest makes shooting myself cheap
+  else if (!D.battery && dmg >= D.hp) th = Math.min(th, 0.15); // one hit kills me: don't gamble on myself
+  return p >= th ? 'player' : 'self';
+}
+function smartScore(id, c, depth = 0) {
+  const { D, P, p, cert, n } = c, gun = G.gun;
+  const toP = chooseTarget(c) === 'player', shield = P.vest || P.mirror;
+  const hurt = D.max - D.hp, heal = !D.cut && hurt > 0, dmg = shotDmg();
+  const willHit = toP && !shield && (cert === true || p >= 0.6);
+  const overkill = cert === true && dmg >= P.hp && !shield;     // already lethal: save the good stuff
+  switch (id) {
+    // --- survival first ---
+    case 'fuse': return D.cut ? 100 : heal ? 62 : 0;
+    case 'cigar': return heal && hurt >= 2 ? 70 : heal && D.hp <= 2 && !c.has('cig') && !c.has('pills') ? 46 : 0;
+    case 'cig': return heal ? 65 : 0;
+    case 'pills': return heal ? (hurt >= 2 ? 66 : 50) : 0;
+    case 'medicine': return heal && hurt >= 2 && (D.hp >= 2 || D.battery) ? 40 : 0;
+    // --- protection that stays up until it is needed ---
+    case 'battery': return D.battery ? 0 : 58;
+    case 'vest': return D.vest ? 0 : 57;
+    case 'mirror': return D.mirror ? 0 : 56;
+    case 'voodoo': return !D.voodoo && P.hp > 1 ? 45 : 0;
+    // --- information ---
+    case 'glass': return cert === null ? 90 : 0;
+    case 'xray': return cert === null ? 92 : n > 1 && !G.shells[1].seenD && c.p1 > 0.001 && c.p1 < 0.999 ? 28 : 0;
+    case 'flashlight': return n >= 2 && !G.shells[n - 1].seenD ? (n === 2 && cert === null ? 86 : 30) : 0;
+    case 'tarot': return cert === null && D.hp >= 3 && c.unknown >= 3 ? 75 : 0;
+    case 'phone': return n >= 3 && G.shells.slice(1).some(s => !s.seenD) ? (cert === null ? 24 : 32) : 0;
+    // --- shell control ---
+    case 'inverter':
+      if (cert === false) return shield ? 0 : 85;                          // blank -> live, then shoot him
+      if (cert === true) return P.mirror && !D.vest ? 78 : 0;               // live I can't use -> blank, keep my turn
+      return p <= 0.35 && !shield ? 48 : 0;
+    case 'beer':
+      if (cert === true) return P.mirror && !D.vest ? 70 : 0;
+      if (cert === false) return 0;                                         // shooting myself keeps the turn anyway
+      return p > 0.3 && p < 0.7 && n > 1 ? 64 : 0;                       // look before committing cuffs / saw
+    case 'whiskey':
+      if (cert === true) return P.mirror && !D.vest && !c.has('beer') ? 60 : 0;
+      return cert === null && n > 2 && p > 0.3 && p < 0.7 && !c.has('beer') ? 52 : 0;
+    case 'rosary':
+      if (cert === true) return P.mirror && !D.vest ? 50 : 0;
+      return cert === null && p >= 0.35 && (c.has('inverter') || (D.hp <= 1 && !D.vest)) ? 36 : 0;
+    case 'liveshell': return toP && cert === null && p >= 0.5 && !shield ? 22 : c.free === 0 ? 8 : 0;
+    case 'dummy': return !toP && cert === null && D.hp <= 1 && !D.vest ? 25 : c.free === 0 ? 8 : 0;
+    case 'shuffler': {
+      const theyKnow = G.shells.slice(1).filter(s => s.seenP && !s.seenD).length;
+      return cert === null && n >= 3 && theyKnow >= 2 ? 40 : 0;
+    }
+    // --- offense: only on shots that are going to land ---
+    case 'saw': return willHit && !gun.saw && dmg < P.hp && !(c.has('gunpowder') && !gun.powder && P.hp - dmg === 1) ? (cert === true ? 80 : 50) : 0;
+    case 'gunpowder': return willHit && !gun.powder && dmg < P.hp ? (cert === true ? 76 : 46) : 0;
+    case 'burst': return toP && !shield && !gun.burst && n >= 2 && !overkill && p + c.p1 >= 1.4 ? (p >= 0.999 && c.p1 >= 0.999 ? 74 : 45) : 0;
+    case 'cuffs': return P.cuff ? 0 : overkill ? 0 : toP ? (cert === true ? 72 : 60) : cert === null && p >= 0.3 ? 30 : 0;
+    case 'energy': return !D.energy && toP && cert !== true ? 42 : 0;
+    // --- mess with the player before the turn goes over ---
+    case 'tape': { const k = P.items.filter(Boolean).length; return P.taped ? 0 : k >= 2 ? 38 : k === 1 ? 20 : 0; }
+    case 'poison': return P.poison ? 0 : 40;
+    case 'cutters': { const t = Math.max(0, ...P.items.filter(Boolean).map(it => threatOf(it.id))); return t >= 40 ? 34 : 0; }
+    case 'magnet': { const t = Math.max(0, ...P.items.filter(Boolean).map(it => threatOf(it.id))); return c.free > 0 && t >= 30 ? 38 : 0; }
+    // --- gambles / resources ---
+    case 'coin': return P.hp === 1 && (D.hp >= 2 || D.battery || D.vest) ? 42 : 0;
+    case 'dice': return D.hp >= 2 ? 26 : 0;
+    case 'box': return c.free >= 2 ? 50 : c.free === 1 ? 20 : 0;
+    case 'contract': return D.hp >= 3 && D.hp >= P.hp && c.free >= 3 ? 30 : 0;
+    case 'joker': return D.hp >= 2 ? 20 : 0;
+    case 'adrenaline': {
+      if (depth > 0) return 0;
+      let best = 0;
+      P.items.forEach(it => { if (!it || it.id === 'adrenaline') return; const d = ITEMS[it.id]; if (d.can && d.can(D)) return; best = Math.max(best, smartScore(it.id, c, 1)); });
+      return best >= 30 ? best - 5 : 0;
+    }
+  }
+  return 0;
+}
+function dealerPlan() {
+  const D = G.D, c = dealerCtx();
+  let best = -1, bs = 0;
+  D.items.forEach((it, i) => {
+    if (!it) return; const d = ITEMS[it.id]; if (d.can && d.can(D)) return;
+    const sc = smartScore(it.id, c); if (sc <= 0) return;
+    const s = sc + rand(0, 3); if (s > bs) { bs = s; best = i; }
+  });
+  return best;
+}
+function smartPickSteal(slots, o, purpose) {
+  const c = dealerCtx();
+  let best = slots[0], bs = -1;
+  for (const i of slots) {
+    const id = o.items[i].id;
+    let s = purpose === 'adrenaline' ? smartScore(id, c, 1)
+      : purpose === 'magnet' ? threatOf(id) * 0.6 + smartScore(id, c, 1) * 0.6
+      : threatOf(id);
+    s += rand(0, 2);
+    if (s > bs) { bs = s; best = i; }
+  }
+  return best;
+}
+async function smartDealerTurn() {
+  const D = G.D;
+  let uses = 0;
+  if (D.taped) { msg("THE DEALER'S HANDS ARE TAPED.", 'dimt', 1500); await wait(900); }
+  const log = BOT ? { p0: +dealerBelief(0).toFixed(2), hp: [G.D.hp, G.P.hp], items: [], has: D.items.filter(Boolean).map(it => it.id) } : null;
+  while (!D.taped && uses < 12) {
+    const slot = dealerPlan();
+    if (slot < 0) break;
+    if (log) log.items.push(D.items[slot].id + '@' + dealerBelief(0).toFixed(2));
+    await useItemFromSlot(D, slot);
+    uses++;
+    if (dead() || G.shells.length === 0) return false;
+    await wait(rand(300, 600));
+  }
+  const c = dealerCtx(), target = chooseTarget(c);
+  if (log) { Object.assign(log, { p: +c.p.toFixed(2), target, live: G.shells[0].live, saw: G.gun.saw, pvest: G.P.vest, pmirror: G.P.mirror }); (window.__aiLog = window.__aiLog || []).push(log); }
+  if (c.cert === null && Math.random() < 0.5) { W.dealer.look.copy(W.gunRig.position); await wait(rand(300, 700)); }
+  await dealerShoot(target);
+  return true;
+}
+
 async function dealerShoot(target) {
   const toPlayer = target === 'player';
   await dealerPickupGun();
@@ -3091,6 +3828,7 @@ async function dealerDown() {
 async function playRounds() {
   while (true) {
     const res = await playRound();
+    if (BOT) (window.__rounds = window.__rounds || []).push({ res, round: G.round, ai: OPT.ai, p: G.P.hp, d: G.D.hp });
     if (res === 'playerDead') {
       if (G.mode === 'story' && G.round < 3) { await revivePlayer(); continue; }
       await gameOver(); return;
@@ -3343,12 +4081,12 @@ function ejectShellFx(live, delay = 0) {
     const out = V3(0.1, 0.3, 1).applyQuaternion(q).normalize();
     const vel = out.multiplyScalar(rand(1.0, 1.5)); vel.y = Math.abs(vel.y) + rand(1.0, 1.6);
     physProp(s, { vel, spin: V3(rand(-16, 16), rand(-8, 8), rand(-16, 16)), rest: 0.38, radius: 0.013, life: rand(4, 6),
-      onBounce: (imp, n) => S.clack(0, Math.min(1, imp / 2) / (n + 1)), settle: o => settleTo(o, lyingQuat()) });
+      onBounce: (imp, n) => S.at(s.position).clack(0, Math.min(1, imp / 2) / (n + 1)), settle: o => settleTo(o, lyingQuat()) });
   });
 }
 async function rackAnim(ejects = []) {
   const g = FX.gun;
-  S.rack();
+  S.at(wpos(W.gun)).rack();
   await tween(130, k => { g.pump = k; }, ease.out);
   ejects.forEach((live, i) => ejectShellFx(live, i * 0.12));
   g.roll.kick(2.4); g.recoil.kick(0.25);
@@ -3364,7 +4102,7 @@ function dropBarrelPiece() {
   piece.quaternion.setFromUnitVectors(UP, gunAxis());
   scene.add(piece);
   physProp(piece, { vel: V3(rand(-0.2, 0.2), 0.7, rand(-0.15, 0.15)), spin: V3(rand(-5, 5), rand(-2, 2), rand(-5, 5)), rest: 0.3, radius: 0.017, life: 7,
-    onBounce: (imp, n) => { if (n < 3) S.metal(); }, settle: o => settleTo(o, qAxis(UP, rand(0, 6)).multiply(qAxis(V3(1, 0, 0), Math.PI / 2))) });
+    onBounce: (imp, n) => { if (n < 3) S.at(piece.position).metal(0, 1 / (n + 1)); }, settle: o => settleTo(o, qAxis(UP, rand(0, 6)).multiply(qAxis(V3(1, 0, 0), Math.PI / 2))) });
 }
 function fireFx(shooterIsPlayer, live, targetIsPlayer) {
   const g = FX.gun, c = FX.cam;
@@ -3383,11 +4121,11 @@ function fireFx(shooterIsPlayer, live, targetIsPlayer) {
 // ---------- player gun handling ----------
 async function playerPickupGun() {
   const g = FX.gun;
-  S.pickup(); swayObj.enabled = false;
+  S.at(wpos(W.gun)).pickup(); swayObj.enabled = false;
   W.dealer.look.copy(W.gunRig.position);
   const q0 = W.gunRig.quaternion.clone();
   await moveTo(W.gunRig, W.gunRig.position.clone().add(V3(0, 0.05, 0.03)), 170, { quat: q0.clone().multiply(qAxis(V3(1, 0, 0), 0.3)), e: ease.out });
-  S.whoosh();
+  S.at(wpos(W.gun)).whoosh(0, 0.8);
   const hp = gunPosePlayerHold();
   await moveTo(W.gunRig, hp.pos, 540, { quat: hp.quat, lift: 0.14, e: ease.sine });
   g.lift.kick(-2.6); g.recoil.kick(-0.3); FX.cam.kick.kick(-0.3);
@@ -3421,7 +4159,7 @@ function calmPlayer() {
 async function gunToTable(ms = 580) {
   FX.gun.sway = 0;
   await moveTo(W.gunRig, POSE.gunTable.pos, ms, { quat: POSE.gunTable.quat, lift: 0.13, e: ease.sine });
-  S.thud(0, 0.3); FX.gun.lift.kick(-3); FX.gun.roll.kick(1.5);
+  S.at(wpos(W.gun)).thud(0, 0.3); S.at(wpos(W.gun)).place('metal', 0.6); FX.gun.lift.kick(-3); FX.gun.roll.kick(1.5);
 }
 
 // ---------- dealer hands ----------
@@ -3461,10 +4199,10 @@ function updateHands() {
 }
 function dealerReact(kind) {
   const F = FX.dealer;
-  if (kind === 'laugh') { F.laugh = 1.3; S.laugh(); F.nod.kick(-0.6); }
+  if (kind === 'laugh') { F.laugh = 1.3; S.at(headPos()).laugh(); F.nod.kick(-0.6); }
   else if (kind === 'tilt') { F.tilt.kick(rand(0.8, 1.4) * (Math.random() < 0.5 ? -1 : 1)); F.nod.kick(0.4); }
   else if (kind === 'lean') F.push.kick(0.7);
-  else if (kind === 'flinch') { F.push.kick(-1.1); F.nod.kick(-1.4); F.tilt.kick(rand(-1.2, 1.2)); }
+  else if (kind === 'flinch') { if (!W.dealer.gone) S.at(headPos()).grunt(); F.push.kick(-1.1); F.nod.kick(-1.4); F.tilt.kick(rand(-1.2, 1.2)); }
 }
 
 // ---------- dealer gun handling ----------
@@ -3476,7 +4214,7 @@ async function dealerPickupGun() {
     dealerHandTo(0, W.gun.localToWorld(V3(-0.04, -0.045, 0)), 460, { curl: 0.85 }),
     dealerHandTo(1, W.gun.userData.pump.localToWorld(V3(0, -0.035, 0)), 500, { curl: 0.85 }),
   ]);
-  setGrip(true, true); S.pickup();
+  setGrip(true, true); S.at(wpos(W.gun)).pickup();
   const p = poseDealerHold();
   await moveTo(W.gunRig, p.pos, 650, { quat: p.quat, lift: 0.18, e: ease.sine });
   FX.gun.lift.kick(-2); FX.gun.roll.kick(1.5);
@@ -3514,6 +4252,7 @@ async function dealerVanishFx() {
   const hp = headPos();
   for (let i = 0; i < 16; i++) spawnParticle(hp, { color: 0x4a2a28, vel: V3(rand(-0.6, 0.6), rand(-0.2, 0.8), rand(-1.2, -0.2)), size: rand(0.02, 0.05), grow: 0.06, life: rand(0.5, 1.1), opacity: 0.55 });
   F.nod.kick(-6); F.tilt.kick(rand(-4, 4));
+  S.at(hp).whoosh(0, 1.3); S.at(hp.clone().add(V3(0, -0.8, -0.9))).fall(crushModel ? 0.7 : 0.45);
   const z0 = d.baseZ;
   await tween(140, k => { b.position.z = z0 - 0.35 * k; b.position.y = 0.06 * k; h.scale.set(1 + 0.2 * k, 1 - 0.25 * k, 1 + 0.12 * k); }, ease.outQuart);
   await tween(crushModel ? 650 : 380, k => { b.position.z = z0 - 0.35 - 0.55 * k; b.position.y = 0.06 - 0.3 * k; }, ease.inQuad);
@@ -3523,11 +4262,12 @@ async function dealerVanishFx() {
 async function dealerReturnFx() {
   const d = W.dealer, b = d.root, F = FX.dealer;
   if (!d.gone) return;
-  S.zap(); await wait(1150);
+  const dp = V3(0, 1.1, d.baseZ - 0.6);
+  S.at(dp).zap(); await wait(1150);
   G.lampFlicker = 0.6;
   setDealerCrushed(false);
   b.position.set(0, -0.25, d.baseZ - 1.1); b.visible = true; d.gone = false;
-  F.nod.x = 0.7; S.whoosh();
+  F.nod.x = 0.7; S.at(dp).whoosh();
   await tween(1100, k => { b.position.z = d.baseZ - 1.1 * (1 - k); b.position.y = -0.25 * (1 - k); }, ease.outQuart);
   F.nod.kick(-2.5);
 }
@@ -3536,6 +4276,7 @@ async function dealerReturnFx() {
 async function playerHitFx() {
   const c = FX.cam;
   post.flash = 1; FX.aberr = 2; shake(1.2);
+  SND.deafen(1, 4.5, 0.05); S.fall(0.55);
   c.kick.kick(2.8); c.push.kick(2.2); c.roll.kick(rand(-2.5, 2.5));
   await tween(220, k => { post.flash = 1 - k; });
   await Promise.all([animVal(c, 'leanY', -0.35, 600, ease.inQuad), animVal(c, 'leanPitch', 0.55, 600, ease.inQuad),
@@ -3568,7 +4309,7 @@ async function showShellsFx(shown, sayInsert) {
   for (const s of objs) {
     s.visible = true; const r0 = s.rotation.clone();
     tween(460, k => { s.position.y = TABLE_Y + 0.35 * (1 - k); s.rotation.set(r0.x * (1 - k), r0.y, r0.z * (1 - k)); }, ease.outBounce);
-    wait(170).then(() => S.clack(0, 0.8));
+    wait(170).then(() => S.at(s.position).clack(0, 0.8));
     await wait(80);
   }
   await wait(420);
@@ -3579,7 +4320,8 @@ async function showShellsFx(shown, sayInsert) {
   const xr = SHELL_ZONE.x0 + SHELL_ZONE.cell * 8 + 0.05, xl = SHELL_ZONE.x0 - 0.05;
   await dealerHandTo(1, V3(xr, TABLE_Y + 0.02, SHELL_ZONE.z - 0.03), 380, { curl: 0.15 });
   const hand = W.dealer.hands[1];
-  S.whoosh();
+  S.at(V3(xr, TABLE_Y, SHELL_ZONE.z)).whoosh();
+  wait(430).then(() => S.at(V3(0.3, TABLE_Y - 0.05, -1.1)).shake(0.3));
   objs.forEach(s => {
     const delay = (xr - s.position.x) / (xr - xl) * 380;
     wait(delay).then(() => moveTo(s, V3(0.3 + rand(-0.08, 0.08), TABLE_Y - 0.1, -1.15), 520,
@@ -3599,7 +4341,7 @@ async function dealerLoadGun(n) {
     dealerHandTo(1, W.gun.userData.pump.localToWorld(V3(0, -0.035, 0)), 420, { curl: 0.85 }),
     dealerHandTo(0, W.gun.localToWorld(V3(0.08, -0.04, 0)), 420, { curl: 0.7 }),
   ]);
-  setGrip(false, true); S.pickup();
+  setGrip(false, true); S.at(wpos(W.gun)).pickup();
   carry(0, W.gunRig);
   W.dealer.look.copy(poseDealerLoad().pos);
   const lp = poseDealerLoad();
@@ -3615,7 +4357,7 @@ async function dealerLoadGun(n) {
     await moveTo(s, port.clone().addScaledVector(axis, -0.05), 200 * sp, { quat: new THREE.Quaternion().setFromUnitVectors(UP, axis.clone().negate()), lift: 0.07, e: ease.sine });
     h0.userData.carry = null; FX.dealer.curlT[0] = 0.3;
     await moveTo(s, port.clone().addScaledVector(axis, 0.06), 90 * sp, { e: ease.inQuad });
-    scene.remove(s); S.load(); FX.gun.recoil.kick(-0.5); FX.gun.lift.kick(-0.7);
+    scene.remove(s); S.at(port).load(); FX.gun.recoil.kick(-0.5); FX.gun.lift.kick(-0.7);
     await wait(40 * sp);
   }
   h0.userData.busy = false;
@@ -3629,25 +4371,25 @@ async function dealerLoadGun(n) {
 async function boxIn(bx, zTo, player) {
   bx.visible = true; bx.userData.lid.rotation.x = 0; bx.scale.setScalar(1);
   bx.position.set(0, TABLE_Y - 0.12, player ? 1.3 : -1.3); bx.rotation.set(0, rand(-0.25, 0.25), 0);
-  S.whoosh();
+  S.at(V3(0, TABLE_Y, zTo)).whoosh();
   await moveTo(bx, V3(0, TABLE_Y, zTo), 520, { lift: 0.14, e: ease.sine });
-  S.thud(0, 0.3); squash(bx, 0.25, 320);
+  S.at(bx.position).thud(0, 0.3); S.at(bx.position).place('wood', 0.8); squash(bx, 0.25, 320);
 }
 async function boxOpen(bx) {
-  S.box();
+  S.at(bx.position).box();
   await tween(430, k => { bx.userData.lid.rotation.x = -2.0 * k; }, ease.outBack);
   smokePuff(bx.position.clone().add(V3(0, 0.08, 0)), 6, 0.05);
 }
 async function boxOut(bx, player) {
   await tween(180, k => { bx.userData.lid.rotation.x = -2.0 * (1 - k); }, ease.in);
-  S.thud(0, 0.15);
+  S.at(bx.position).thud(0, 0.15);
   await moveTo(bx, V3(0, TABLE_Y - 0.15, player ? 1.35 : -1.35), 380, { lift: 0.06, e: ease.inBack });
   bx.visible = false;
 }
 async function itemFromBox(o, bx, showPos, tilt) {
   o.scale.setScalar(0.3);
   o.position.copy(bx.position).add(V3(0, 0.05, 0));
-  S.whoosh();
+  S.at(showPos).whoosh(0, 0.7);
   animScale(o, 1, 380, ease.outBack);
   await moveTo(o, showPos, 420, { quat: tilt, lift: 0.1, spin: Math.PI * 2, axis: UP, e: ease.outQuart });
   o.userData.float = true;
@@ -3655,7 +4397,7 @@ async function itemFromBox(o, bx, showPos, tilt) {
 async function placeItem(o, pos) {
   o.userData.float = false;
   await moveTo(o, pos, 400, { quat: qAxis(UP, rand(-0.25, 0.25)), lift: 0.1, e: ease.sine });
-  S.place(); squash(o, 0.3, 300);
+  S.at(o.position).place(matOf(o.userData.itemId)); squash(o, 0.3, 300);
 }
 
 // ---------- restraints that stay visible (cuffs / tape) ----------
@@ -3669,7 +4411,7 @@ function syncBind(key, on, make) {
   } else if (!on && o) {
     BIND[key] = null;
     if (o.parent !== scene) scene.attach(o);
-    S.metal();
+    if (key.includes('tape')) S.at(wpos(o)).tape(0.15); else S.at(wpos(o)).metal(0, 0.6);
     physProp(o, { vel: V3(rand(-0.3, 0.3), 0.8, rand(-0.2, 0.2)), spin: V3(rand(-6, 6), rand(-6, 6), rand(-6, 6)), rest: 0.3, radius: 0.01, life: 2.2, dispose: true });
   }
   return o;
@@ -3771,44 +4513,48 @@ async function presentItemFx(u, obj) {
   if (!isP(u)) {
     const hi = obj.position.x < 0 ? 0 : 1;
     await dealerHandTo(hi, obj.position.clone().add(V3(0, 0.02, -0.03)), 380, { curl: 0.85 });
-    carry(hi, obj); S.pickup();
+    carry(hi, obj); S.at(obj.position).pickup();
     await moveTo(obj, AP.hold(u), 480, { quat: tipQuat(u, -0.5), lift: 0.1, e: ease.sine });
     return;
   }
-  S.pickup();
+  S.at(obj.position).pickup();
   await moveTo(obj, AP.hold(u), 430, { quat: tipQuat(u, 0.6), lift: 0.06, e: ease.outBack });
 }
 function tossAway(u, obj) {
   releaseCarry(u);
   obj.userData.tossed = true;
   const side = isP(u) ? camDir(V3(0.9, 0.4, -0.3)) : V3(0.8, 0.5, 0.4);
-  physProp(obj, { vel: side.multiplyScalar(1.3), spin: V3(rand(-8, 8), rand(-8, 8), rand(-8, 8)), rest: 0.3, radius: 0.03, life: 2.4, dispose: true, onBounce: (imp, n) => { if (n < 2) S.thud(0, 0.15); } });
+  physProp(obj, { vel: side.multiplyScalar(1.3), spin: V3(rand(-8, 8), rand(-8, 8), rand(-8, 8)), rest: 0.3, radius: 0.03, life: 2.4, dispose: true, onBounce: (imp, n) => { if (n < 3) S.at(obj.position).place(matOf(obj.userData.itemId), 0.8 / (n + 1)); } });
 }
 const A = {
   async drink(u, obj, ctx, id) {
     const P = isP(u), m = AP.mouth(u);
+    S.at(obj.position)[id === 'whiskey' ? 'uncork' : 'canOpen']();
     await moveTo(obj, m.clone().add(P ? camDir(V3(0, -0.04, -0.06)) : V3(0, -0.05, 0.06)), 360, { quat: faceQuat(u), e: ease.sine });
     if (P) animVal(FX.cam, 'leanPitch', 0.3, 520, ease.sine); else { FX.dealer.nod.kick(-2.4); FX.dealer.jawT = 0.25; }
     await moveTo(obj, m, 420, { quat: tipQuat(u, 2.0), e: ease.sine });
-    for (let i = 0; i < 3; i++) { await tween(170, k => { obj.position.y = m.y + Math.sin(k * Math.PI) * 0.012; }); if (P) FX.cam.kick.kick(0.12); else FX.dealer.nod.kick(-0.4); }
+    for (let i = 0; i < 3; i++) { S.at(m).gulp(i); await tween(170, k => { obj.position.y = m.y + Math.sin(k * Math.PI) * 0.012; }); if (P) FX.cam.kick.kick(0.12); else FX.dealer.nod.kick(-0.4); }
     if (P) animVal(FX.cam, 'leanPitch', 0, 450, ease.sine); else FX.dealer.jawT = 0;
+    if (id === 'whiskey') S.at(m).burn(); else S.at(m).ahh(!P);
     await moveTo(obj, m.clone().add(P ? camDir(V3(0.06, -0.08, -0.12)) : V3(0.1, -0.1, 0.1)), 300, { quat: faceQuat(u), e: ease.sine });
-    if (id !== 'whiskey') { S.crush(); const s0 = obj.scale.clone(); await tween(120, k => obj.scale.set(s0.x * (1 - 0.35 * k), s0.y * (1 - 0.18 * k), s0.z * (1 + 0.12 * k))); }
+    if (id !== 'whiskey') { S.at(obj.position).crush(); const s0 = obj.scale.clone(); await tween(120, k => obj.scale.set(s0.x * (1 - 0.35 * k), s0.y * (1 - 0.18 * k), s0.z * (1 + 0.12 * k))); }
     tossAway(u, obj);
   },
   async smoke(u, obj) {
     const P = isP(u), m = AP.mouth(u);
     await moveTo(obj, m, 420, { quat: tipQuat(u, P ? 1.1 : -1.1), e: ease.sine });
     const fp = obj.position.clone().add(P ? camDir(V3(0.03, 0.01, 0.0)) : V3(0.03, 0.02, 0.05));
-    const fl = sprite(fp, 0xffa040, 0.035); S.flame(); flashLight(fp, 0xffa050, 2.5, 500);
+    const fl = sprite(fp, 0xffa040, 0.035); S.at(fp).flame(); flashLight(fp, 0xffa050, 2.5, 500);
     await tween(420, k => { fl.scale.setScalar(0.03 + Math.random() * 0.015); fl.material.opacity = 1 - k * 0.5; }, ease.linear);
     scene.remove(fl);
     const ember = sprite(fp, 0xff5a20, 0.012);
     if (P) animVal(FX.cam, 'leanPitch', 0.07, 400, ease.sine); else FX.dealer.jawT = -0.05;
+    S.at(fp).inhale(0.9);
     await tween(900, k => { ember.scale.setScalar(0.01 + k * 0.01); }, ease.linear);
     scene.remove(ember);
     const mouth = AP.mouth(u), dir = P ? camDir(V3(0, 0.12, -1)) : V3(0, 0.12, 1);
     if (!P) FX.dealer.jawT = 0.15;
+    S.at(mouth).exhale();
     for (let i = 0; i < 14; i++) {
       spawnParticle(mouth.clone().addScaledVector(dir, 0.06), { color: 0x9a948c, vel: dir.clone().multiplyScalar(rand(0.12, 0.32)).add(V3(rand(-0.04, 0.04), rand(0.02, 0.08), rand(-0.04, 0.04))), size: rand(0.02, 0.045), grow: rand(0.1, 0.2), life: rand(1.5, 2.6), opacity: rand(0.1, 0.2) });
       await wait(35);
@@ -3818,20 +4564,23 @@ const A = {
   },
   async pills(u, obj) {
     const P = isP(u);
+    S.at(obj.position).capPop();
     await moveTo(obj, AP.face(u), 280, { quat: faceQuat(u) });
     const p0 = obj.position.clone();
+    S.at(p0).rattle(0.52);
     await tween(520, k => { obj.position.copy(p0).add(V3(Math.sin(k * 60) * 0.012, Math.sin(k * 47) * 0.008, 0)); }, ease.linear);
     await moveTo(obj, AP.mouth(u), 240, { quat: tipQuat(u, P ? 1.7 : -1.7) });
+    S.at(obj.position).rattle(0.14);
     if (P) FX.cam.kick.kick(0.9); else FX.dealer.nod.kick(-2.2);
-    SND.tone({ type: 'sine', f: 170, f1: 90, dur: 0.18, vol: 0.2 });
     await wait(220);
+    S.at(AP.mouth(u)).swallow();
     tossAway(u, obj);
   },
   async inject(u, obj) {
     const P = isP(u), th = AP.thigh(u);
     await moveTo(obj, th.clone().add(P ? camDir(V3(0, 0.16, 0)) : V3(0, 0.16, 0)), 260, { quat: tipQuat(u, P ? -1.4 : 1.4) });
     await moveTo(obj, th, 110, { e: ease.inQuad });
-    S.stab();
+    S.at(th).inject();
     if (P) { FX.cam.fov.kick(90); FX.aberr = 1.5; post.red = 0.5; animVal(post, 'red', 0, 700); FX.cam.kick.kick(-0.6); FX.cam.trembleT = 0.4; wait(900).then(() => { FX.cam.trembleT = 0; }); }
     else { dealerReact('flinch'); FX.dealer.jawT = 0.25; wait(600).then(() => { FX.dealer.jawT = 0; }); }
     await wait(260);
@@ -3840,8 +4589,10 @@ const A = {
     const P = isP(u), top = gunTop();
     if (P) animPose(camRig, gunLookPose(), 450); else { W.dealer.look.copy(top); FX.dealer.push.kick(0.8); }
     await moveTo(obj, top, 450, { quat: qAxis(UP, P ? 0.3 : -0.3), lift: 0.06 });
+    if (id !== 'flashlight') S.at(top).glass();
+    if (!P) wait(350).then(() => S.at(headPos()).hmm());
     let L = null;
-    if (id === 'flashlight') { L = new THREE.PointLight(0xfff0c0, 3, 0.9, 2); L.position.copy(top); scene.add(L); S.blip(1500); }
+    if (id === 'flashlight') { L = new THREE.PointLight(0xfff0c0, 3, 0.9, 2); L.position.copy(top); scene.add(L); S.at(top).flashClick(); }
     const p0 = obj.position.clone(), axis = gunAxis();
     await tween(950, k => { obj.position.copy(p0).addScaledVector(axis, Math.sin(k * Math.PI * 2) * 0.035); }, ease.linear);
     if (L) scene.remove(L);
@@ -3852,13 +4603,14 @@ const A = {
     if (P) {
       await moveTo(obj, AP.face(u), 280, { quat: faceQuat(u) });
       await moveTo(obj, AP.eyes(u), 200, { e: ease.inQuad });
-      obj.visible = false; S.power();
+      obj.visible = false; S.goggles();
       FX.tint.setRGB(0.3, 1.25, 0.5); await animVal(FX, 'tintAmt', 0.55, 250);
       await wait(2700);
       animVal(FX, 'tintAmt', 0, 300); obj.visible = true;
       await moveTo(obj, AP.hold(u), 280);
     } else {
       await moveTo(obj, AP.eyes(u), 420, { quat: new THREE.Quaternion() });
+      S.at(obj.position).goggles();
       const e = [-0.06, 0.06].map(x => sprite(obj.position.clone().add(V3(x, 0, 0.03)), 0x5aff7a, 0.05));
       await wait(1100); e.forEach(s => scene.remove(s));
       await moveTo(obj, AP.hold(u), 300);
@@ -3872,6 +4624,7 @@ const A = {
     if (P) animPose(camRig, gunLookPose(), 450); else W.dealer.look.copy(cut);
     await moveTo(obj, above, 380, { quat: quatFromX(perp), lift: 0.05 });
     for (let i = 0; i < 5; i++) {
+      S.at(cut).sawStroke(i);
       const from = obj.position.clone(), to = above.clone().addScaledVector(perp, (i % 2 ? -1 : 1) * 0.06).add(V3(0, -0.013 * (i + 1), 0));
       await tween(165, k => obj.position.lerpVectors(from, to, k), ease.sine);
       sparks(cut.clone().add(V3(0, 0.02, 0)), 7); FX.gun.trembleT = 0.35;
@@ -3886,11 +4639,11 @@ const A = {
     const top = gunTop();
     await moveTo(obj, top, 380, { quat: new THREE.Quaternion(), lift: 0.05 });
     await moveTo(obj, top.clone().add(V3(0, -0.07, 0)), 120, { e: ease.inQuad });
-    S.thud(0, 0.15); FX.gun.lift.kick(-1.5);
+    S.at(top).inverter(); FX.gun.lift.kick(-1.5);
     for (let i = 0; i < 5; i++) {
       W.gun.updateMatrixWorld(true);
       const p = W.gun.localToWorld(V3(rand(-0.05, 0.45), 0.03, 0));
-      sparks(p, 8, 0x9fd8ff); FX.gun.trembleT = 0.6; flashLight(p, 0x8fc8ff, 5, 120); S.zapArc();
+      sparks(p, 8, 0x9fd8ff); FX.gun.trembleT = 0.6; flashLight(p, 0x8fc8ff, 5, 120); S.at(p).zapArc();
       await wait(90);
     }
     FX.gun.trembleT = 0;
@@ -3901,7 +4654,9 @@ const A = {
     const top = dev.localToWorld(V3(0, 0.34, 0));
     await moveTo(obj, top, 480, { lift: 0.1, quat: qAxis(UP, dev.rotation.y) });
     await moveTo(obj, dev.localToWorld(V3(0, 0.24, 0)), 120, { e: ease.inQuad });
-    for (let i = 0; i < 4; i++) { const p = dev.localToWorld(V3(rand(-0.12, 0.12), 0.2, 0)); sparks(p, 8, 0x9fd8ff); flashLight(p, 0x8fc8ff, 4, 110); await wait(90); }
+    S.at(top).clamp();
+    for (let i = 0; i < 4; i++) { const p = dev.localToWorld(V3(rand(-0.12, 0.12), 0.2, 0)); sparks(p, 8, 0x9fd8ff); flashLight(p, 0x8fc8ff, 4, 110); S.at(p).zapArc(); await wait(90); }
+    S.at(top).chargeUp();
     W.dispGlitch = 0.7;
     await wait(250);
   },
@@ -3909,7 +4664,7 @@ const A = {
     const top = gunTop().add(V3(0, 0.06, 0));
     await moveTo(obj, top, 380, { quat: new THREE.Quaternion() });
     await moveTo(obj, top, 250, { quat: tipQuat(u, isP(u) ? -2.2 : 2.2) });
-    S.pour();
+    S.at(top).pour(0.6);
     for (let i = 0; i < 16; i++) { spawnParticle(obj.position.clone().add(V3(rand(-0.01, 0.01), -0.02, rand(-0.01, 0.01))), { color: 0x151515, vel: V3(rand(-0.02, 0.02), -0.35, rand(-0.02, 0.02)), size: 0.008, grow: 0, life: 0.45, opacity: 0.95, tex: TEX.smoke }); await wait(35); }
     await moveTo(obj, top.clone().add(V3(0, 0.05, 0)), 220, { quat: new THREE.Quaternion() });
   },
@@ -3917,7 +4672,7 @@ const A = {
     W.gun.updateMatrixWorld(true);
     const a = W.gun.localToWorld(V3(0.12, 0.03, 0)), b = W.gun.localToWorld(V3(0.45, 0.03, 0)), axis = gunAxis();
     await moveTo(obj, a.clone().add(V3(0, 0.05, 0)), 350);
-    S.tape();
+    S.at(a).tape(0.62);
     const q0 = obj.quaternion.clone();
     await tween(620, k => { obj.position.lerpVectors(a, b, k).add(V3(0, 0.05 * (1 - k) + 0.012, 0)); obj.quaternion.copy(q0).premultiply(qAxis(axis, k * 12)); }, ease.sine);
     await animScale(obj, 0.2, 150);
@@ -3930,22 +4685,23 @@ const A = {
     W.gun.updateMatrixWorld(true);
     const port = W.gun.localToWorld(V3(0.06, 0.0, 0));
     await moveTo(s, port, 220, { quat: new THREE.Quaternion().setFromUnitVectors(UP, gunAxis().negate()), lift: 0.03, e: ease.inQuad });
-    scene.remove(s); FX.gun.recoil.kick(-0.4);
+    scene.remove(s); S.at(port).load(); FX.gun.recoil.kick(-0.4);
   },
   async shake(u, obj) {
     const top = gunTop().add(V3(0, 0.05, 0));
     await moveTo(obj, top, 300);
     const p0 = obj.position.clone();
-    FX.gun.trembleT = 0.8;
+    FX.gun.trembleT = 0.8; S.at(top).shake(0.82);
     await tween(820, k => { obj.position.copy(p0).add(V3(Math.sin(k * 70) * 0.03, Math.abs(Math.sin(k * 55)) * 0.03, Math.sin(k * 63) * 0.015)); obj.rotation.z = Math.sin(k * 70) * 0.4; }, ease.linear);
     FX.gun.trembleT = 0;
   },
-  async throwBind(u, obj) {
+  async throwBind(u, obj, ctx, id) {
     const P = isP(u);
     releaseCarry(u); if (!P) dealerHandsHome(350);
     const tgt = P ? W.dealer.hands[0].position.clone().lerp(W.dealer.hands[1].position, 0.5).add(V3(0, 0.03, 0.04)) : camWorld(V3(0, -0.29, -0.42));
     S.whoosh();
     await moveTo(obj, tgt, 460, { lift: 0.18, spin: Math.PI * 3, axis: V3(1, 0, 0), e: ease.sine });
+    S.at(tgt)[id === 'tape' ? 'tapeBind' : 'cuffs']();
     if (P) { dealerReact('flinch'); W.dealer.hands.forEach((h, i) => { h.userData.busy = false; }); }
     else { FX.cam.kick.kick(-0.8); FX.cam.roll.kick(rand(-0.6, 0.6)); }
     await wait(250);
@@ -3955,8 +4711,9 @@ const A = {
     const P = isP(u);
     releaseCarry(u); if (!P) dealerHandsHome(350);
     const tgt = P ? AP.mouth(G.D) : camWorld(V3(0, -0.05, -0.25));
+    S.at(obj.position).uncork();
     await moveTo(obj, tgt, 460, { lift: 0.2, spin: 8, axis: V3(1, 0, 0) });
-    S.splash();
+    S.at(tgt).splash();
     for (let i = 0; i < 22; i++) spawnParticle(tgt, { color: 0x4adf5a, additive: true, vel: V3(rand(-0.6, 0.6), rand(-0.2, 0.6), rand(-0.6, 0.6)), size: rand(0.01, 0.025), grow: 0, life: rand(0.3, 0.7), opacity: 0.9 });
     if (!P) { FX.tint.setRGB(0.45, 1.35, 0.45); FX.tintAmt = 0.45; animVal(FX, 'tintAmt', 0, 900); FX.cam.kick.kick(-0.5); }
     else dealerReact('flinch');
@@ -3968,17 +4725,17 @@ const A = {
       await moveTo(obj, AP.face(u), 250, { quat: faceQuat(u) });
       animVal(FX.cam, 'leanPitch', -0.35, 300, ease.sine);
       await moveTo(obj, AP.chest(u), 300, { e: ease.inQuad });
-      S.cloth(); obj.visible = false;
+      S.at(obj.position).velcro(); obj.visible = false;
       await wait(180); animVal(FX.cam, 'leanPitch', 0, 350, ease.sine); FX.cam.kick.kick(-0.3);
     } else {
-      await moveTo(obj, AP.chest(u), 450); FX.dealer.nod.kick(1.2); S.cloth();
+      await moveTo(obj, AP.chest(u), 450); FX.dealer.nod.kick(1.2); S.at(obj.position).velcro();
       await animScale(obj, 0.5, 200); obj.visible = false;
     }
   },
   async mirror(u, obj) {
     const P = isP(u), f = AP.face(u);
     await moveTo(obj, f.clone().add(P ? camDir(V3(0, 0.03, 0)) : V3(0, 0.05, 0)), 380, { quat: tipQuat(u, P ? -0.9 : 0.9), e: ease.outBack });
-    S.glint();
+    S.at(obj.position).glint(); S.at(obj.position).magic();
     const gl = sprite(obj.position.clone().add(P ? camDir(V3(0, 0, -0.02)) : V3(0, 0, 0.03)), 0xffffff, 0.02);
     await tween(420, k => { gl.scale.setScalar(0.02 + Math.sin(k * Math.PI) * 0.12); gl.material.rotation = k * 2; }, ease.linear);
     scene.remove(gl);
@@ -3988,6 +4745,7 @@ const A = {
     const P = isP(u), f = AP.face(u).add(V3(0, 0.07, 0));
     await moveTo(obj, f, 420, { quat: tipQuat(u, P ? 1.2 : -1.2) });
     const glow = sprite(obj.position, 0xe6c35c, 0.05);
+    S.at(obj.position).beads(1.2);
     const q0 = obj.quaternion.clone(), ax = isP(u) ? camDir(V3(0, 0, 1)) : V3(0, 0, 1);
     await tween(1250, k => { obj.quaternion.copy(q0).premultiply(qAxis(ax, Math.sin(k * 14) * 0.35 * (1 - k))); glow.scale.setScalar(0.05 + Math.sin(k * Math.PI) * 0.12); glow.material.opacity = Math.sin(k * Math.PI); }, ease.linear);
     scene.remove(glow);
@@ -3998,7 +4756,7 @@ const A = {
     for (let i = 0; i < 3; i++) {
       const p0 = obj.position.clone();
       await tween(110, k => { obj.position.copy(p0).add(V3(0, -0.02 * Math.sin(k * Math.PI), 0)); });
-      S.stab();
+      S.at(obj.position).pin();
       if (P) dealerReact('flinch'); else { FX.cam.kick.kick(-0.6); post.red = 0.35; animVal(post, 'red', 0, 300); }
       await wait(90);
     }
@@ -4012,9 +4770,10 @@ const A = {
     await moveTo(obj, AP.hold(u), 240, { quat: new THREE.Quaternion() });
     const land = V3(rand(-0.1, 0.1), TABLE_Y + 0.004, P ? 0.62 : -0.62), p0 = obj.position.clone();
     const spins = 7 + (heads ? 0 : 0.5);
+    S.at(p0).coinFlick();
     await tween(1000, k => { obj.position.lerpVectors(p0, land, k); obj.position.y += Math.sin(k * Math.PI) * 0.38; obj.rotation.set(k * spins * Math.PI * 2, 0, 0); }, ease.linear);
     obj.rotation.set(heads ? 0 : Math.PI, rand(0, 6), 0);
-    S.clack(0, 1);
+    S.at(land).coinLand();
     await tween(180, k => { obj.position.y = land.y + Math.sin(k * Math.PI) * 0.02; });
     await tween(360, k => { obj.rotation.z = Math.sin(k * 22) * 0.14 * (1 - k); }, ease.linear);
     await wait(500);
@@ -4022,13 +4781,14 @@ const A = {
   async roll(u, obj, ctx) {
     const P = isP(u), r = 1 + Math.floor(ctx.rnd * 6);
     releaseCarry(u);
+    S.at(obj.position).diceShake();
     await moveTo(obj, AP.hold(u), 220);
     const target = V3(rand(-0.15, 0.15), TABLE_Y, P ? 0.35 : -0.35);
     const vel = target.clone().sub(obj.position).multiplyScalar(1.6); vel.y = 1.2;
     const FACE = { 1: [0, 0, Math.PI / 2], 6: [0, 0, -Math.PI / 2], 2: [0, 0, 0], 5: [Math.PI, 0, 0], 3: [-Math.PI / 2, 0, 0], 4: [Math.PI / 2, 0, 0] };
     const fq = qAxis(UP, rand(0, 6)).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(...FACE[r])));
     physProp(obj, { vel, spin: V3(rand(-18, 18), rand(-10, 10), rand(-18, 18)), rest: 0.4, fric: 0.6, radius: 0.0225, life: 99,
-      onBounce: (imp, n) => S.clack(0, Math.min(1, imp / 2)), settle: o => settleTo(o, fq, 180) });
+      onBounce: (imp, n) => S.at(obj.position).dieHit(Math.min(1, imp / 2)), settle: o => settleTo(o, fq, 180) });
     await wait(1000);
     const p = PHYS.find(x => x.obj === obj);
     if (p && !p.resting) { p.resting = true; settleTo(obj, fq, 150); }
@@ -4038,7 +4798,8 @@ const A = {
     const P = isP(u);
     const start = tipQuat(u, P ? -Math.PI / 2 : Math.PI / 2), end = qAxis(upAxis(u), Math.PI).multiply(start);
     await moveTo(obj, AP.face(u), 380, { quat: start, e: ease.outBack });
-    S.snap();
+    S.at(obj.position).snap();
+    if (id === 'tarot') S.at(obj.position).tarot(); else if (id === 'joker') S.at(obj.position).joker(); else if (id === 'contract') S.at(obj.position).pen(0.6);
     const glow = sprite(obj.position.clone().add(P ? camDir(V3(0, 0, -0.03)) : V3(0, 0, -0.03)), id === 'contract' ? 0xc12a20 : 0xe6c35c, 0.04);
     const q0 = obj.quaternion.clone();
     await tween(420, k => { obj.quaternion.slerpQuaternions(q0, end, k); glow.scale.setScalar(0.04 + k * 0.16); }, ease.outBack);
@@ -4048,15 +4809,17 @@ const A = {
   async phone(u, obj) {
     const P = isP(u);
     await moveTo(obj, AP.ear(u), 420, { quat: P ? qAxis(camDir(V3(0, 0, 1)), 0.35).multiply(faceQuat(u)) : qAxis(UP, -1.2), lift: 0.05 });
+    S.at(AP.ear(u)).phone();
     if (P) animVal(FX.cam, 'leanRoll', -0.1, 400, ease.sine); else FX.dealer.tilt.kick(1.4);
     await wait(1700);
     if (P) animVal(FX.cam, 'leanRoll', 0, 400, ease.sine);
   },
   async burst(u, obj) {
     const p0 = obj.position.clone();
+    S.at(p0).boxRattle(0.42);
     await tween(420, k => { obj.position.copy(p0).add(V3(Math.sin(k * 50) * 0.01, 0, Math.sin(k * 43) * 0.01)); }, ease.linear);
     await animScale(obj, 1.4, 130, ease.outBack);
-    burst(obj.position, 0xe6c35c, 22, 0.6, 0.014); S.glint();
+    burst(obj.position, 0xe6c35c, 22, 0.6, 0.014); S.at(obj.position).pop();
     obj.visible = false;
   },
 };
@@ -4173,6 +4936,8 @@ function optionsHtml() {
     <button data-opt="musicSrc" data-val="file" class="${OPT.musicSrc === 'file' ? 'on' : ''}">MP3</button><button data-opt="musicSrc" data-val="synth" class="${OPT.musicSrc === 'synth' ? 'on' : ''}">SYNTH</button>
     <button id="musicLoad">LOAD MUSIC</button><button id="musicClear">X</button></div></div>
   <div class="optRow"><span>SOUND EFFECTS</span><input type="range" min="0" max="1" step="0.05" data-range="sfx" value="${OPT.sfx}"></div>
+  <div class="optRow"><span>EAR RINGING<small>shots muffle everything for a moment</small></span>${onoff('deafen')}</div>
+  <div class="optRow"><span>DEALER AI<small>SMART = plans combos · CLASSIC = gut feeling</small></span>${seg('ai', [['smart', 'SMART'], ['classic', 'CLASSIC']])}</div>
   <div class="optRow"><span>RETRO PIXEL FILTER<small>low-res + dithering like the original</small></span>${onoff('retro')}</div>
   <div class="optRow"><span>ITEM POOL<small>CLASSIC = 5 · D.O.N. = 9 · ALL = 36 items</small></span>${seg('pool', [['classic', 'CLASSIC'], ['don', 'D.O.N.'], ['all', 'ALL']])}</div>
   <div class="optRow"><span>DEALER MODEL<small>3D FILE = your Dealer.fbx · CLASSIC = built-in head</small></span>${seg('dealerModel', [['file', '3D FILE'], ['procedural', 'CLASSIC']])}</div>
@@ -4465,6 +5230,7 @@ async function introBathroom() {
   S.door(); shake(0.5);
   tween(420, k => { W.bathDoor.rotation.y = 1.8 * k; }, ease.out);
   await wait(250);
+  [350, 850].forEach((ms, i) => wait(ms).then(() => S.step(0.7 + i * 0.15)));
   await animPose(camRig, POSE.bathDoor, 1300);
   await fadeTo(1, 450);
   W.bath.visible = false; W.bathLight.visible = false;
@@ -4473,9 +5239,11 @@ async function introBathroom() {
   await wait(600);
   await fadeTo(0, 900);
   await wait(300);
-  S.zapSmall(); G.lampPower = 1; G.lampFlicker = 1.2;
+  W.fixtures.forEach((fx, i) => S.at(fx.position).buzz(0.9 + i * 0.3)); G.lampPower = 1; G.lampFlicker = 1.2;
   W.dealer.look.copy(camPos());
+  [150, 680, 1210].forEach((ms, i) => wait(ms).then(() => S.step(0.8 + (i % 2) * 0.15)));
   await animPose(camRig, POSE.walk, 1600);
+  wait(250).then(() => S.chair());
   await animPose(camRig, POSE.seat, 1300);
 }
 async function waiverScene() {
@@ -4552,7 +5320,7 @@ function simulate(rdt, now) {
   const t = clock.t;
 
   // stage light flicker
-  if (Math.random() < dt * 0.3) flickT = rand(0.04, 0.2);
+  if (Math.random() < dt * 0.3) { flickT = rand(0.04, 0.2); if (G.lampPower && W.fixtures.length) S.at(pick(W.fixtures).position).flick(flickT); }
   flickT -= dt;
   if (G.lampFlicker > 0) G.lampFlicker -= dt;
   let f = 1 + Math.sin(t * 47) * 0.012 + (Math.random() - 0.5) * 0.03;
@@ -4610,7 +5378,7 @@ function boot() {
   $('#menu').classList.remove('hidden');
   loadDealerModel().then(m => { if (!m) return; W.dealer.model = m; W.dealer.head.add(m.normal, m.crush); applyDealerModel(); })
     .catch(e => console.warn('dealer model not loaded, using built-in head:', e));
-  window.__BR = { G, W, OPT, clock, startGame, toMenu, ITEMS, offerInput, camRig, POSE, poseLook, V3, THREE, MUSIC, SND, FX, advance, playItemAnim, buildItem, scene, A, presentItemFx, fn: { playerPickupGun, playerAim, fire, gunToTable, calmPlayer, dealerPickupGun, dealerAim, dealerPutDownGun, showShellsFx, rackAnim, dealerVanishFx, dealerReturnFx, playerHitFx, playerRecoverFx, useItemFromSlot, spawnItemObj, setItemTarget, drawDisplay, genShells, distributeItems, dealerReact, resetScene }, get waiter() { return inputWaiter; } };
+  window.__BR = { G, W, OPT, clock, startGame, toMenu, ITEMS, offerInput, camRig, POSE, poseLook, V3, THREE, MUSIC, SND, S, AMB, FX, advance, simulate, playItemAnim, buildItem, scene, A, presentItemFx, fn: { playerPickupGun, playerAim, fire, gunToTable, calmPlayer, dealerPickupGun, dealerAim, dealerPutDownGun, showShellsFx, rackAnim, dealerVanishFx, dealerReturnFx, playerHitFx, playerRecoverFx, useItemFromSlot, spawnItemObj, setItemTarget, drawDisplay, genShells, distributeItems, dealerReact, resetScene }, get waiter() { return inputWaiter; } };
   if (BOT) { OPT.skipIntro = params.get('intro') !== '1'; OPT.pool = params.get('pool') || 'all'; OPT.autoPlace = false; startGame(params.get('mode') || 'story'); }
 }
 boot();

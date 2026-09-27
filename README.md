@@ -33,7 +33,7 @@ Eigene Datei: **`buckshot-roulette.html`** – einfach im Browser öffnen (Deskt
 
 ## Original-Soundtrack (optional, nur lokal)
 Der Original-Song ist urheberrechtlich geschützt und deshalb **nicht** im Repo. Wer ihn besitzt, kann ihn so benutzen – er läuft dann lückenlos im Loop statt des eingebauten Tracks:
-- **OPTIONS → LOAD MUSIC** und die MP3 auswählen (der Browser merkt sie sich), oder
+- im Hauptmenü auf **♪ LOAD SONG** klicken und die MP3 auswählen (der Browser merkt sie sich; dahinter steht dann der Songname mit ✓), oder
 - die Datei als `general-release.mp3` neben `buckshot-roulette.html` legen.
 
 `*.mp3` steht in der `.gitignore`, damit sie nicht aus Versehen hochgeladen wird.

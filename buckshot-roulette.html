@@ -144,6 +144,7 @@
     <button class="mbtn" data-act="items">ITEMS <span class="sub" id="itemCount"></span></button>
     <button class="mbtn" data-act="howto">HOW TO PLAY</button>
     <button class="mbtn" data-act="options">OPTIONS</button>
+    <button class="mbtn" data-act="song">&#9835; LOAD SONG <span class="sub" id="songStatus">(synth)</span></button>
     <button class="mbtn" data-act="credits">CREDITS</button>
   </div>
   <div class="menuFoot">Fan-made tribute. Not affiliated with Mike Klubnika / CRITICAL REFLEX.<br>Sounds, music, room &amp; items are generated in code · Dealer model: Dealer.fbx.</div>
@@ -344,7 +345,9 @@ const SND = {
     if (MUSIC.el) { MUSIC.elMuffled = on; MUSIC.el.volume = clamp(OPT.music, 0, 1) * (on ? 0.3 : 1); }
     const f = this.muffle.frequency, t = this.ctx.currentTime;
     f.cancelScheduledValues(t); f.setValueAtTime(f.value, t);
-    f.exponentialRampToValueAtTime(on ? 380 : 20000, t + sec);
+    const custom = MUSIC.useCustom();
+    const target = !on ? 20000 : custom ? (G.inGame ? 1200 : 20000) : 380;
+    f.exponentialRampToValueAtTime(target, t + sec);
   },
   // ---- primitives ----
   tone(o) {
@@ -4190,7 +4193,7 @@ function openOptions(onClose) {
     if (key === 'retro') resize();
     if (key === 'hud') updateHud();
     if (key === 'dealerModel') applyDealerModel();
-    if (key === 'musicSrc') MUSIC.restart();
+    if (key === 'musicSrc') { MUSIC.restart(); refreshMusicStatus(); if (!G.inGame) SND.setMuffle(v === 'synth', 0.4); }
   };
   body.oninput = e => { const r = e.target.dataset.range; if (!r) return; OPT[r] = +e.target.value; saveOpt(); SND.applyVolumes(); };
   $('#musicLoad').onclick = e => { e.stopPropagation(); $('#musicFile').click(); };
@@ -4201,8 +4204,11 @@ function openOptions(onClose) {
   refreshMusicStatus();
 }
 function refreshMusicStatus() {
-  const el = document.getElementById('musicStatus'); if (!el) return;
-  el.textContent = MUSIC.customName ? `loaded: ${MUSIC.customName} (looped)` : 'no mp3 loaded - put general-release.mp3 next to the html or press LOAD MUSIC';
+  const nice = MUSIC.customName.replace(/\.[a-z0-9]+$/i, '').replace(/^[0-9a-f]{8}-/i, '').replace(/_/g, ' ');
+  const ms = document.getElementById('musicStatus');
+  if (ms) ms.textContent = MUSIC.customName ? `loaded: ${nice} (looped)` : 'no mp3 loaded - put general-release.mp3 next to the html or press LOAD MUSIC';
+  const ss = document.getElementById('songStatus');
+  if (ss) ss.textContent = MUSIC.customName && OPT.musicSrc !== 'synth' ? `(${nice} \u2713)` : '(synth)';
 }
 let THUMBS = null;
 function makeThumbs() {
@@ -4364,8 +4370,10 @@ function initInput() {
   $('#musicFile').addEventListener('change', async e => {
     const f = e.target.files && e.target.files[0]; e.target.value = '';
     if (!f) return;
-    const st = document.getElementById('musicStatus'); if (st) st.textContent = 'loading ' + f.name + '...';
-    try { await importMusicFile(f); } catch (err) { if (st) st.textContent = 'could not read that file'; console.warn(err); }
+    const st = document.getElementById('musicStatus'), ss = document.getElementById('songStatus');
+    if (st) st.textContent = 'loading ' + f.name + '...'; if (ss) ss.textContent = '(loading...)';
+    try { OPT.musicSrc = 'file'; saveOpt(); await importMusicFile(f); if (!G.inGame) SND.setMuffle(false, 0.4); }
+    catch (err) { if (st) st.textContent = 'could not read that file'; if (ss) ss.textContent = '(could not read that file)'; console.warn(err); }
   });
   addEventListener('keydown', e => {
     if (!$('#waiver').classList.contains('hidden')) return;
@@ -4525,6 +4533,7 @@ function initMenu() {
     else if (a === 'howto') openPanel('HOW TO PLAY', HOWTO);
     else if (a === 'options') openOptions();
     else if (a === 'credits') openPanel('CREDITS', CREDITS);
+    else if (a === 'song') $('#musicFile').click();
   });
   // first interaction anywhere starts the menu ambience
   const kick = () => { SND.init(); if (SND.ctx && !MUSIC.playing && !G.inGame) { MUSIC.start(0); MUSIC.setLevel(0); SND.setMuffle(true, 0.1); AMB.start('room'); } };
